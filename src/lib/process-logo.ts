@@ -55,7 +55,7 @@ export async function processLogo(request: LogoRequest): Promise<string> {
       await updateComment(commentId, `**Logo Agent** processing **${slug}**\n\n✅ Favicon fetched\n⏳ Vectorizing image...`);
     }
 
-    // Step 2: Vectorize using vectorizer.io via Browser Tool
+    // Step 2: Vectorize using vectorizer.ai API
     console.log(`[process-logo] Step 2: Vectorizing`);
     const { svgContent: rawSvg } = await vectorize(imageUrl);
     console.log(
