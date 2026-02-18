@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getComposio } from "@/lib/composio";
 import { processLogo } from "@/lib/process-logo";
+import { handleDone } from "@/lib/handle-done";
 import type { LinearIssuePayload, LogoRequest } from "@/types";
 
 export async function POST(request: NextRequest) {
@@ -52,15 +53,28 @@ export async function POST(request: NextRequest) {
       issueData?.title
     );
 
-    // Only process when issue is moved to "Todo" status
-    const currentState = issueData?.state?.name;
-    if (!currentState || currentState.toLowerCase() !== "todo") {
+    const currentState = issueData?.state?.name?.toLowerCase();
+
+    // Handle "Done" — merge the PR and comment
+    if (currentState === "done") {
+      const slug = deriveSlug(issueData.title);
+      console.log(`[webhook] Issue moved to Done, merging PR for ${slug}`);
+
+      handleDone(issueData.id, slug).catch((err) => {
+        console.error(`[webhook] handleDone failed for ${slug}:`, err);
+      });
+
+      return NextResponse.json({ status: "merging", slug });
+    }
+
+    // Handle "Todo" — start the logo pipeline
+    if (currentState !== "todo") {
       console.log(
-        `[webhook] Issue state is "${currentState}", not "Todo" — skipping`
+        `[webhook] Issue state is "${issueData?.state?.name}", not "Todo" or "Done" — skipping`
       );
       return NextResponse.json({
         status: "skipped",
-        reason: `state is "${currentState}", waiting for "Todo"`,
+        reason: `state is "${issueData?.state?.name}"`,
       });
     }
 

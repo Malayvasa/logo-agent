@@ -83,3 +83,47 @@ export async function commitAndCreatePR(
 
   return { prUrl, branchName };
 }
+
+export async function mergePRForSlug(slug: string): Promise<string> {
+  const branchName = `logo/${slug}`;
+
+  // Find the open PR for this branch
+  const prsResult = await executeTool("GITHUB_LIST_PULL_REQUESTS", {
+    owner: REPO_OWNER,
+    repo: REPO_NAME,
+    head: `${REPO_OWNER}:${branchName}`,
+    state: "open",
+  }, GITHUB_CONNECTED_ACCOUNT);
+
+  const prs = prsResult.data || [];
+  if (!Array.isArray(prs) || prs.length === 0) {
+    throw new Error(`No open PR found for branch ${branchName}`);
+  }
+
+  const prNumber = prs[0].number;
+  const prUrl = prs[0].html_url || prs[0].url;
+  console.log(`[github] Found PR #${prNumber} for ${branchName}`);
+
+  // Merge the PR
+  await executeTool("GITHUB_MERGE_A_PULL_REQUEST", {
+    owner: REPO_OWNER,
+    repo: REPO_NAME,
+    pull_number: prNumber,
+    merge_method: "squash",
+  }, GITHUB_CONNECTED_ACCOUNT);
+  console.log(`[github] Merged PR #${prNumber}`);
+
+  // Delete the branch
+  try {
+    await executeTool("GITHUB_DELETE_A_REFERENCE", {
+      owner: REPO_OWNER,
+      repo: REPO_NAME,
+      ref: `heads/${branchName}`,
+    }, GITHUB_CONNECTED_ACCOUNT);
+    console.log(`[github] Deleted branch ${branchName}`);
+  } catch (err) {
+    console.warn(`[github] Failed to delete branch ${branchName}:`, err);
+  }
+
+  return prUrl;
+}
