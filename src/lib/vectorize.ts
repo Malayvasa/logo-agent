@@ -23,9 +23,14 @@ export async function vectorize(
       `You are already logged into vectorizer.io as a pro user.`,
       `Go to https://www.vectorizer.io/`,
       `Upload the image from this URL: ${faviconImageUrl}`,
-      `Wait for the vectorization to complete`,
-      `Download the result as an SVG file`,
-      `IMPORTANT: The downloaded file MUST be an SVG file (not PNG). If vectorization fails, try again.`,
+      `Wait for the vectorization to complete (you should see the vectorized output on the right panel).`,
+      `After vectorization completes, extract the SVG content. Do one of the following:`,
+      `  Option A: Use JavaScript to find the SVG download link and fetch its content as text using fetch().`,
+      `  Option B: Find an inline <svg> element in the output panel and serialize it using new XMLSerializer().serializeToString(svgElement).`,
+      `  Option C: Download the SVG file and then read it using JavaScript.`,
+      `In your done message, include the COMPLETE SVG XML content between markers: SVG_START and SVG_END`,
+      `Example format: SVG_START<svg xmlns="http://www.w3.org/2000/svg" ...>...</svg>SVG_END`,
+      `CRITICAL: You MUST include the full SVG XML markup in your done message. Do NOT just report that you downloaded it.`,
     ].join(". "),
     startUrl: "https://www.vectorizer.io/",
     ...(browserSessionId ? { sessionId: browserSessionId } : {}),
@@ -249,6 +254,7 @@ async function pollVectorizeTask(taskId: string): Promise<string> {
         JSON.stringify(watchResult.data, null, 2)
       );
 
+      // Method 1: Check outputFiles from the Browser Tool API
       const outputFiles =
         watchResult.data?.outputFiles || watchResult.data?.output_files;
       if (outputFiles && outputFiles.length > 0) {
@@ -262,59 +268,49 @@ async function pollVectorizeTask(taskId: string): Promise<string> {
           (f.fileName || f.name || "").toLowerCase().includes("svg")
         );
 
-        if (svgFiles.length === 0) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const names = outputFiles
-            .map((f: any) => f.fileName || f.name)
-            .join(", ");
+        if (svgFiles.length > 0) {
+          const file = svgFiles[0];
+          const fileId = file.id || file.fileId;
           console.log(
-            `[vectorize] No SVG files in output, only: ${names}`
+            `[vectorize] Using file: ${JSON.stringify(file)}, fileId: ${fileId}`
           );
-          throw new Error(
-            "Vectorize task finished but no SVG file was produced"
+
+          const fileResult = await executeTool(
+            "BROWSER_TOOL_GET_OUTPUT_FILE",
+            {
+              taskId,
+              fileId,
+            }
           );
-        }
-
-        const file = svgFiles[0];
-        const fileId = file.id || file.fileId;
-        console.log(
-          `[vectorize] Using file: ${JSON.stringify(file)}, fileId: ${fileId}`
-        );
-
-        const fileResult = await executeTool(
-          "BROWSER_TOOL_GET_OUTPUT_FILE",
-          {
-            taskId,
-            fileId,
-          }
-        );
-        console.log(
-          `[vectorize] File result:`,
-          JSON.stringify(fileResult.data, null, 2)
-        );
-
-        const downloadUrl =
-          fileResult.data?.downloadUrl ||
-          fileResult.data?.url ||
-          fileResult.data?.download_url;
-        if (downloadUrl) {
-          const response = await fetch(downloadUrl);
-          const svgContent = await response.text();
           console.log(
-            `[vectorize] Downloaded (${svgContent.length} chars), starts with: ${svgContent.substring(0, 200)}`
+            `[vectorize] File result:`,
+            JSON.stringify(fileResult.data, null, 2)
           );
 
-          if (
-            !svgContent.includes("<svg") &&
-            !svgContent.includes("<?xml")
-          ) {
-            throw new Error(
-              `Downloaded file is not valid SVG (starts with: ${svgContent.substring(0, 50)})`
+          const downloadUrl =
+            fileResult.data?.downloadUrl ||
+            fileResult.data?.url ||
+            fileResult.data?.download_url;
+          if (downloadUrl) {
+            const response = await fetch(downloadUrl);
+            const svgContent = await response.text();
+            console.log(
+              `[vectorize] Downloaded (${svgContent.length} chars), starts with: ${svgContent.substring(0, 200)}`
             );
-          }
 
-          return svgContent;
+            if (
+              svgContent.includes("<svg") ||
+              svgContent.includes("<?xml")
+            ) {
+              return svgContent;
+            }
+            console.log(`[vectorize] Downloaded file is not valid SVG, trying other methods...`);
+          }
+        } else {
+          console.log(`[vectorize] No SVG files in outputFiles, trying other extraction methods...`);
         }
+      } else {
+        console.log(`[vectorize] No outputFiles in response, trying other extraction methods...`);
       }
 
       const output = watchResult.data?.output;
@@ -322,6 +318,25 @@ async function pollVectorizeTask(taskId: string): Promise<string> {
 
       const result = watchResult.data?.result;
       if (result && String(result).includes("<svg")) return String(result);
+
+      // Check the steps' done action for SVG content (Browser Tool puts content there)
+      const svgFromSteps = extractSvgFromSteps(watchResult.data?.steps);
+      if (svgFromSteps) {
+        console.log(
+          `[vectorize] Extracted SVG from steps done action (${svgFromSteps.length} chars)`
+        );
+        return svgFromSteps;
+      }
+
+      // Last resort: find SVG file path in files_to_display and read it via a follow-up task
+      const svgFilePath = extractSvgFilePathFromSteps(watchResult.data?.steps);
+      if (svgFilePath) {
+        console.log(
+          `[vectorize] Found SVG file path in steps: ${svgFilePath}, reading via follow-up task`
+        );
+        const svgFromFile = await readFileViaBrowserTask(svgFilePath, watchResult.data?.id);
+        if (svgFromFile) return svgFromFile;
+      }
 
       throw new Error(
         "Vectorize task finished but no SVG found in output"
@@ -336,6 +351,93 @@ async function pollVectorizeTask(taskId: string): Promise<string> {
   }
 
   throw new Error(`Vectorize task timed out after ${maxAttempts} attempts`);
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractSvgFilePathFromSteps(steps: any[] | undefined): string | null {
+  if (!steps || !Array.isArray(steps)) return null;
+
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const step = steps[i];
+    const actions = step?.actions;
+    if (!actions || !Array.isArray(actions)) continue;
+
+    for (const action of actions) {
+      const actionStr = typeof action === "string" ? action : JSON.stringify(action);
+      // Look for files_to_display containing .svg paths
+      const fileMatch = actionStr.match(/files_to_display[^[]*\[([^\]]*\.svg[^\]]*)\]/);
+      if (fileMatch) {
+        const pathMatch = fileMatch[1].match(/"([^"]*\.svg)"/);
+        if (pathMatch) return pathMatch[1];
+      }
+    }
+  }
+
+  return null;
+}
+
+async function readFileViaBrowserTask(filePath: string, sessionId?: string): Promise<string | null> {
+  try {
+    console.log(`[vectorize] Creating follow-up task to read SVG file: ${filePath}`);
+    const readTask = await executeTool("BROWSER_TOOL_CREATE_TASK", {
+      task: [
+        `Read the contents of the file at: ${filePath}`,
+        `Use JavaScript: const fs = require('fs'); const content = fs.readFileSync('${filePath}', 'utf8');`,
+        `Or navigate to the file URL if it's accessible.`,
+        `In your done message, include the COMPLETE file contents between markers: SVG_START and SVG_END`,
+      ].join(". "),
+      ...(sessionId ? { sessionId } : lastSessionId ? { sessionId: lastSessionId } : {}),
+    });
+
+    const readTaskId = readTask.data?.watch_task_id;
+    if (!readTaskId) return null;
+
+    const taskOutput = await waitForTask(readTaskId);
+    // Try to extract SVG from the task output
+    const markerMatch = taskOutput.match(/SVG_START([\s\S]*?)SVG_END/);
+    if (markerMatch && markerMatch[1].includes("<svg")) return markerMatch[1].trim();
+
+    const svgMatch = taskOutput.match(/(<svg[\s\S]*?<\/svg>)/);
+    if (svgMatch) return svgMatch[1];
+
+    return null;
+  } catch (err) {
+    console.error(`[vectorize] Failed to read SVG file via browser task:`, err);
+    return null;
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractSvgFromSteps(steps: any[] | undefined): string | null {
+  if (!steps || !Array.isArray(steps)) return null;
+
+  // Walk steps in reverse to find the done action with SVG content
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const step = steps[i];
+    const actions = step?.actions;
+    if (!actions || !Array.isArray(actions)) continue;
+
+    for (const action of actions) {
+      const actionStr = typeof action === "string" ? action : JSON.stringify(action);
+
+      // Check for SVG_START...SVG_END markers
+      const markerMatch = actionStr.match(/SVG_START([\s\S]*?)SVG_END/);
+      if (markerMatch) {
+        const svg = markerMatch[1].trim();
+        if (svg.includes("<svg")) return svg;
+      }
+
+      // Check for raw SVG content in the done text
+      const svgMatch = actionStr.match(/(<svg[\s\S]*?<\/svg>)/);
+      if (svgMatch) return svgMatch[1];
+
+      // Check for <?xml ... <svg> content
+      const xmlSvgMatch = actionStr.match(/(<\?xml[\s\S]*?<\/svg>)/);
+      if (xmlSvgMatch) return xmlSvgMatch[1];
+    }
+  }
+
+  return null;
 }
 
 function sleep(ms: number) {
