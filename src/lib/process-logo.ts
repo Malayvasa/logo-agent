@@ -32,18 +32,19 @@ export async function processLogo(request: LogoRequest): Promise<string> {
 
   // Step 4: Commit and create PR
   console.log(`[process-logo] Step 4: Creating PR on GitHub`);
-  const { prUrl } = await commitAndCreatePR(
+  const { prUrl, branchName } = await commitAndCreatePR(
     slug,
     normalizedSvg,
     issueIdentifier
   );
 
-  // Step 5: Comment on the Linear issue with the PR link
+  // Step 5: Comment on the Linear issue with the PR link and SVG preview
   console.log(`[process-logo] Step 5: Updating Linear issue`);
+  const svgPreviewUrl = `https://raw.githubusercontent.com/ComposioHQ/logo-cdn/${branchName}/src/assets/${slug}.svg`;
   try {
     await executeTool("LINEAR_CREATE_LINEAR_COMMENT", {
       issue_id: request.issueId,
-      body: `Logo PR created: ${prUrl}`,
+      body: `Logo PR created: ${prUrl}\n\n![${slug} logo](${svgPreviewUrl})`,
     }, LINEAR_CONNECTED_ACCOUNT);
   } catch (err) {
     console.error(`[process-logo] Failed to comment on Linear issue:`, err);

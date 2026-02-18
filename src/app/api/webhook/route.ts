@@ -105,7 +105,13 @@ export async function POST(request: NextRequest) {
 }
 
 function extractUrl(text: string): string | null {
-  // Match URLs in the text
+  // First, look for explicit "Website: <url>" pattern (Linear issue format)
+  const websiteMatch = text.match(/Website:\s*(https?:\/\/[^\s<>"{}|\\^`\[\]]+)/i);
+  if (websiteMatch) {
+    return websiteMatch[1];
+  }
+
+  // Fall back to first URL in text
   const urlRegex = /https?:\/\/[^\s<>"{}|\\^`\[\]]+/g;
   const matches = text.match(urlRegex);
   if (matches && matches.length > 0) {
@@ -123,6 +129,15 @@ function extractUrl(text: string): string | null {
 }
 
 function deriveSlug(title: string): string {
+  // If title matches "[slug] ...", extract just the bracketed part
+  const bracketMatch = title.match(/^\[([^\]]+)\]/);
+  if (bracketMatch) {
+    return bracketMatch[1]
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]/g, "")
+      .trim();
+  }
+
   return title
     .toLowerCase()
     .replace(/[^a-z0-9\s_-]/g, "")
