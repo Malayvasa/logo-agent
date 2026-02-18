@@ -37,11 +37,20 @@ export async function POST(request: NextRequest) {
     console.log("[webhook] Received trigger:", payload.trigger?.name);
     console.log(
       "[webhook] Payload preview:",
-      JSON.stringify(payload.data, null, 2).substring(0, 500)
+      JSON.stringify(payload.data, null, 2).substring(0, 1000)
     );
 
-    // Extract the Linear issue data from the trigger payload
-    const issueData = payload.data as LinearIssuePayload;
+    // Composio wraps Linear data as: { data: { action, data: { ...issueFields } } }
+    // Handle both nested and flat structures
+    const rawData = payload.data;
+    const issueData = (rawData?.data || rawData) as LinearIssuePayload;
+
+    console.log(
+      "[webhook] Issue state:",
+      JSON.stringify(issueData?.state),
+      "| title:",
+      issueData?.title
+    );
 
     // Only process when issue is moved to "Todo" status
     const currentState = issueData?.state?.name;
