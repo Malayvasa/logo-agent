@@ -105,22 +105,25 @@ export async function POST(request: NextRequest) {
 }
 
 function extractUrl(text: string): string | null {
+  // Strip Linear markdown link syntax: [text](<url>) → text url
+  const cleaned = text.replace(/\[([^\]]*)\]\(<([^>]*)>\)/g, "$1 $2");
+
   // First, look for explicit "Website: <url>" pattern (Linear issue format)
-  const websiteMatch = text.match(/Website:\s*(https?:\/\/[^\s<>"{}|\\^`\[\]]+)/i);
+  const websiteMatch = cleaned.match(/Website:\s*(https?:\/\/[^\s<>"{}|\\^`\[\]]+)/i);
   if (websiteMatch) {
     return websiteMatch[1];
   }
 
-  // Fall back to first URL in text
+  // Fall back to first URL in cleaned text
   const urlRegex = /https?:\/\/[^\s<>"{}|\\^`\[\]]+/g;
-  const matches = text.match(urlRegex);
+  const matches = cleaned.match(urlRegex);
   if (matches && matches.length > 0) {
     return matches[0];
   }
 
   // Also try matching bare domains like "example.com"
   const domainRegex = /(?:^|\s)((?:[a-z0-9-]+\.)+[a-z]{2,})/gi;
-  const domainMatches = text.match(domainRegex);
+  const domainMatches = cleaned.match(domainRegex);
   if (domainMatches && domainMatches.length > 0) {
     return `https://${domainMatches[0].trim()}`;
   }
