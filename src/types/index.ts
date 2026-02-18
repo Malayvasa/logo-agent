@@ -7,6 +7,7 @@ export interface LinearIssuePayload {
   state: { name: string };
   team: { id: string; name: string };
   project?: { id: string; name: string };
+  labels?: { id: string; name: string }[] | { nodes: { id: string; name: string }[] };
 }
 
 export interface LogoRequest {

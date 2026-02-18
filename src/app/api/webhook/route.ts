@@ -50,8 +50,19 @@ export async function POST(request: NextRequest) {
       "[webhook] Issue state:",
       JSON.stringify(issueData?.state),
       "| title:",
-      issueData?.title
+      issueData?.title,
+      "| project:",
+      issueData?.project?.name
     );
+
+    // Only handle issues in the "Logos" project
+    if (issueData?.project?.name !== "Logos") {
+      console.log(`[webhook] Project is "${issueData?.project?.name}", not "Logos" — skipping`);
+      return NextResponse.json({
+        status: "skipped",
+        reason: `project is "${issueData?.project?.name}"`,
+      });
+    }
 
     const currentState = issueData?.state?.name?.toLowerCase();
 
