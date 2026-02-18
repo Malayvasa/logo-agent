@@ -133,8 +133,8 @@ function extractUrl(text: string): string | null {
   // Strip Linear markdown link syntax: [text](<url>) → text url
   const cleaned = text.replace(/\[([^\]]*)\]\(<([^>]*)>\)/g, "$1 $2");
 
-  // First, look for explicit "Website: <url>" pattern (Linear issue format)
-  const websiteMatch = cleaned.match(/Website:\s*(https?:\/\/[^\s<>"{}|\\^`\[\]]+)/i);
+  // First, look for explicit "Website" pattern (with or without colon)
+  const websiteMatch = cleaned.match(/Website:?\s*(https?:\/\/[^\s<>"{}|\\^`\[\]]+)/i);
   if (websiteMatch) {
     return websiteMatch[1];
   }

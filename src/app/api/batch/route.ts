@@ -24,7 +24,7 @@ function deriveSlug(title: string): string {
 
 function extractUrl(text: string): string | null {
   const cleaned = text.replace(/\[([^\]]*)\]\(<([^>]*)>\)/g, "$1 $2");
-  const websiteMatch = cleaned.match(/Website:\s*(https?:\/\/[^\s<>"{}|\\^`\[\]]+)/i);
+  const websiteMatch = cleaned.match(/Website:?\s*(https?:\/\/[^\s<>"{}|\\^`\[\]]+)/i);
   if (websiteMatch) return websiteMatch[1];
   const urlRegex = /https?:\/\/[^\s<>"{}|\\^`\[\]]+/g;
   const matches = cleaned.match(urlRegex);
