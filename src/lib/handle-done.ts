@@ -6,6 +6,12 @@ const LINEAR_CONNECTED_ACCOUNT = "ca_32jlkHR7XaS-";
 export async function handleDone(issueId: string, slug: string): Promise<void> {
   try {
     const prUrl = await mergePRForSlug(slug);
+
+    if (!prUrl) {
+      console.log(`[handle-done] No open PR for ${slug}, nothing to merge`);
+      return;
+    }
+
     console.log(`[handle-done] Merged PR for ${slug}: ${prUrl}`);
 
     await executeTool("LINEAR_CREATE_LINEAR_COMMENT", {
