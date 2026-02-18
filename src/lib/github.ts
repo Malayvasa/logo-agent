@@ -95,7 +95,8 @@ export async function mergePRForSlug(slug: string): Promise<string> {
     state: "open",
   }, GITHUB_CONNECTED_ACCOUNT);
 
-  const prs = prsResult.data || [];
+  console.log(`[github] List PRs response:`, JSON.stringify(prsResult.data, null, 2).substring(0, 500));
+  const prs = Array.isArray(prsResult.data) ? prsResult.data : prsResult.data?.data || prsResult.data?.items || [];
   if (!Array.isArray(prs) || prs.length === 0) {
     throw new Error(`No open PR found for branch ${branchName}`);
   }
