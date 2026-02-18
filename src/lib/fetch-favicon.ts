@@ -1,116 +1,129 @@
-import { executeTool } from "./composio";
-
-const FAVICON_DOWNLOADER_URL =
-  "https://onlineminitools.com/website-favicon-downloader";
-
 interface FaviconResult {
-  sessionId: string;
-  taskId: string;
   imageUrl: string;
 }
 
-export async function fetchFavicon(websiteUrl: string): Promise<FaviconResult> {
-  // Step 1: Create a browser task to fetch the favicon
-  const createResult = await executeTool("BROWSER_TOOL_CREATE_TASK", {
-    task: [
-      `Go to ${FAVICON_DOWNLOADER_URL}`,
-      `Find the input field for the website URL and type: ${websiteUrl}`,
-      `Click the download/submit button to fetch the favicon`,
-      `Wait for the results to load`,
-      `Find the largest favicon image available (prefer 128x128 or larger)`,
-      `Download that favicon image`,
-    ].join(". "),
-    startUrl: FAVICON_DOWNLOADER_URL,
+export async function fetchFavicon(
+  websiteUrl: string
+): Promise<FaviconResult> {
+  const url = new URL(websiteUrl);
+  const origin = url.origin;
+  const domain = url.hostname;
+
+  // Strategy 1: Parse HTML for a large icon (>= 64px)
+  console.log(`[fetch-favicon] Fetching HTML from ${origin}`);
+  let htmlIcon: { href: string; size: number } | null = null;
+  try {
+    htmlIcon = await findBestIconFromHtml(origin);
+  } catch (err) {
+    console.log(`[fetch-favicon] HTML parsing failed: ${err}`);
+  }
+
+  // If HTML found a large icon (known size >= 64px), use it directly
+  if (htmlIcon && htmlIcon.size >= 64) {
+    console.log(`[fetch-favicon] Using HTML icon: ${htmlIcon.href} (${htmlIcon.size}px)`);
+    return { imageUrl: htmlIcon.href };
+  }
+
+  // Strategy 2: Try common icon paths (often higher quality)
+  const commonPaths = [
+    "/apple-touch-icon.png",
+    "/apple-touch-icon-precomposed.png",
+    "/favicon-192x192.png",
+    "/favicon-96x96.png",
+    "/favicon.png",
+  ];
+
+  for (const path of commonPaths) {
+    try {
+      const testUrl = `${origin}${path}`;
+      const res = await fetch(testUrl, { method: "HEAD", redirect: "follow" });
+      if (res.ok) {
+        const contentType = res.headers.get("content-type") || "";
+        if (contentType.startsWith("image/")) {
+          console.log(`[fetch-favicon] Found icon at common path: ${testUrl}`);
+          return { imageUrl: testUrl };
+        }
+      }
+    } catch {
+      // continue to next path
+    }
+  }
+
+  // Strategy 3: Use the HTML icon if we found one (even with unknown size)
+  if (htmlIcon) {
+    console.log(`[fetch-favicon] Using HTML icon (unknown size): ${htmlIcon.href}`);
+    return { imageUrl: htmlIcon.href };
+  }
+
+  // Strategy 4: Google's favicon API (always works, variable quality)
+  const googleUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=128`;
+  console.log(`[fetch-favicon] Falling back to Google API: ${googleUrl}`);
+  return { imageUrl: googleUrl };
+}
+
+async function findBestIconFromHtml(
+  origin: string
+): Promise<{ href: string; size: number } | null> {
+  const res = await fetch(origin, {
+    redirect: "follow",
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; LogoAgent/1.0)" },
   });
 
-  const sessionId = createResult.data?.browser_session_id;
-  const taskId = createResult.data?.watch_task_id;
+  if (!res.ok) return null;
 
-  if (!sessionId || !taskId) {
-    throw new Error(
-      `Failed to create browser task: ${JSON.stringify(createResult)}`
-    );
+  const html = await res.text();
+
+  // Find all <link> tags with rel containing "icon"
+  const linkRegex =
+    /<link\s+[^>]*rel=["'](?:[^"']*(?:icon|apple-touch-icon)[^"']*)["'][^>]*>/gi;
+  const links = html.match(linkRegex) || [];
+
+  interface IconCandidate {
+    href: string;
+    size: number;
+    isAppleTouch: boolean;
   }
 
-  console.log(`[fetch-favicon] Browser task created: ${taskId}`);
+  const candidates: IconCandidate[] = [];
 
-  // Step 2: Poll until the task is complete
-  const imageUrl = await pollBrowserTask(taskId);
+  for (const link of links) {
+    const hrefMatch = link.match(/href=["']([^"']+)["']/);
+    if (!hrefMatch) continue;
 
-  return { sessionId, taskId, imageUrl };
-}
+    const href = hrefMatch[1];
+    const isAppleTouch = /apple-touch-icon/i.test(link);
 
-async function pollBrowserTask(taskId: string): Promise<string> {
-  const maxAttempts = 30;
-  const pollInterval = 5000;
+    // Parse sizes attribute (e.g. sizes="180x180")
+    const sizesMatch = link.match(/sizes=["'](\d+)x(\d+)["']/);
+    const size = sizesMatch ? parseInt(sizesMatch[1], 10) : isAppleTouch ? 180 : 0;
 
-  for (let i = 0; i < maxAttempts; i++) {
-    await sleep(pollInterval);
-
-    const watchResult = await executeTool("BROWSER_TOOL_WATCH_TASK", {
-      taskId,
-    });
-
-    const status = watchResult.data?.status;
-    console.log(
-      `[fetch-favicon] Task ${taskId} status: ${status} (attempt ${i + 1})`
-    );
-
-    if (status === "finished") {
-      // Log the full response so we can see what came back
-      console.log(
-        `[fetch-favicon] Finished response:`,
-        JSON.stringify(watchResult.data, null, 2)
-      );
-
-      // Check for output files (downloaded favicon)
-      const outputFiles =
-        watchResult.data?.outputFiles || watchResult.data?.output_files;
-      if (outputFiles && outputFiles.length > 0) {
-        const fileId = outputFiles[0].id || outputFiles[0].fileId;
-        const fileResult = await executeTool("BROWSER_TOOL_GET_OUTPUT_FILE", {
-          taskId,
-          fileId,
-        });
-        console.log(
-          `[fetch-favicon] File result:`,
-          JSON.stringify(fileResult.data, null, 2)
-        );
-        return (
-          fileResult.data?.url ||
-          fileResult.data?.download_url ||
-          fileResult.data?.downloadUrl
-        );
-      }
-
-      // Check the result output — might be text containing a URL
-      const output = watchResult.data?.output;
-      if (output) {
-        // Try to extract a URL from the output text
-        const urlMatch = output.match(/https?:\/\/[^\s"'<>]+/);
-        if (urlMatch) return urlMatch[0];
-        return output;
-      }
-
-      // Check other possible fields
-      const result = watchResult.data?.result;
-      if (result) {
-        const urlMatch = String(result).match(/https?:\/\/[^\s"'<>]+/);
-        if (urlMatch) return urlMatch[0];
-        return String(result);
-      }
-
-      throw new Error("Browser task finished but no favicon found in output");
+    // Resolve relative URLs
+    let fullUrl: string;
+    try {
+      fullUrl = new URL(href, origin).href;
+    } catch {
+      continue;
     }
 
-    if (status === "stopped" || status === "failed") {
-      throw new Error(`Browser task ${status}: ${watchResult.data?.output}`);
-    }
+    // Skip .ico files — they're usually tiny and multi-res containers
+    if (fullUrl.endsWith(".ico")) continue;
+
+    candidates.push({ href: fullUrl, size, isAppleTouch });
   }
 
-  throw new Error(`Browser task timed out after ${maxAttempts} attempts`);
-}
+  if (candidates.length === 0) return null;
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  // Sort: largest first, prefer apple-touch-icon
+  candidates.sort((a, b) => {
+    if (b.size !== a.size) return b.size - a.size;
+    if (a.isAppleTouch && !b.isAppleTouch) return -1;
+    if (!a.isAppleTouch && b.isAppleTouch) return 1;
+    return 0;
+  });
+
+  console.log(
+    `[fetch-favicon] Found ${candidates.length} icon candidates, best: ${candidates[0].href} (${candidates[0].size}px)`
+  );
+
+  return { href: candidates[0].href, size: candidates[0].size };
 }

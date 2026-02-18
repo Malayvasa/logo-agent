@@ -2,17 +2,19 @@ import { executeTool } from "./composio";
 
 const GMAIL_CONNECTED_ACCOUNT = "ca_TssZYkFAW_L5";
 
+// Cache browser session ID across calls — Browser Use preserves login state
+let lastSessionId: string | null = null;
+
 interface VectorizeResult {
   svgContent: string;
 }
 
 export async function vectorize(
-  faviconImageUrl: string,
-  sessionId?: string
+  faviconImageUrl: string
 ): Promise<VectorizeResult> {
-  // Step 1: Log in to vectorizer.io with OTP
-  console.log(`[vectorize] Step 1: Logging into vectorizer.io`);
-  const browserSessionId = await loginToVectorizer(sessionId);
+  // Step 1: Ensure logged in (reuses session if still active)
+  console.log(`[vectorize] Step 1: Ensuring logged into vectorizer.io`);
+  const browserSessionId = await ensureLoggedIn();
 
   // Step 2: Vectorize the image (same browser session, now logged in)
   console.log(`[vectorize] Step 2: Vectorizing image`);
@@ -44,28 +46,31 @@ export async function vectorize(
   return { svgContent };
 }
 
-async function loginToVectorizer(
-  sessionId?: string
-): Promise<string> {
-  // Task 1: Navigate to vectorizer.io, click login, enter email, request OTP
-  console.log(`[vectorize] Initiating login on vectorizer.io`);
+async function ensureLoggedIn(): Promise<string> {
+  // Task 1: Check if already logged in, if not start the login flow
+  console.log(
+    `[vectorize] Checking login status${lastSessionId ? ` (cached session: ${lastSessionId})` : " (no cached session)"}`
+  );
   const loginTask = await executeTool("BROWSER_TOOL_CREATE_TASK", {
     task: [
       `Go to https://www.vectorizer.io/`,
-      `Find and click the login or sign-in button`,
-      `Enter the email address: malay@composio.dev`,
-      `Click the button to send the OTP or verification code`,
-      `Wait until you see the OTP/code input field, then STOP`,
+      `Check if you are already logged in as a pro user (look for account menu, user email, profile icon, or "My Account" link)`,
+      `If you ARE already logged in, say exactly "ALREADY_LOGGED_IN" and STOP`,
+      `If you are NOT logged in:`,
+      `  - Find and click the login or sign-in button`,
+      `  - Enter the email address: malay@composio.dev`,
+      `  - Click the button to send the OTP or verification code`,
+      `  - Wait until you see the OTP/code input field, then STOP`,
     ].join(". "),
     startUrl: "https://www.vectorizer.io/",
-    ...(sessionId ? { sessionId } : {}),
+    ...(lastSessionId ? { sessionId: lastSessionId } : {}),
   });
 
   const loginTaskId = loginTask.data?.watch_task_id;
   const browserSessionId =
     loginTask.data?.browser_session_id ||
     loginTask.data?.sessionId ||
-    sessionId;
+    lastSessionId;
 
   if (!loginTaskId) {
     throw new Error(
@@ -73,16 +78,22 @@ async function loginToVectorizer(
     );
   }
 
-  console.log(`[vectorize] Login task created: ${loginTaskId}`);
+  console.log(`[vectorize] Login check task created: ${loginTaskId}`);
 
-  // Wait for the login task to finish (OTP requested)
-  await waitForTask(loginTaskId);
+  // Wait for the task to finish and check the output
+  const taskOutput = await waitForTask(loginTaskId);
 
-  // Wait for OTP email to arrive
-  console.log(`[vectorize] Waiting 15s for OTP email to arrive...`);
+  // If already logged in, skip OTP entirely
+  if (taskOutput.includes("ALREADY_LOGGED_IN")) {
+    console.log(`[vectorize] Already logged in, skipping OTP`);
+    lastSessionId = browserSessionId || null;
+    return browserSessionId || "";
+  }
+
+  // Not logged in — need to do the OTP flow
+  console.log(`[vectorize] Not logged in, waiting 15s for OTP email...`);
   await sleep(15000);
 
-  // Fetch OTP from Gmail
   const otp = await fetchOtpFromGmail();
   console.log(`[vectorize] Got OTP: ${otp}`);
 
@@ -108,6 +119,7 @@ async function loginToVectorizer(
   }
 
   console.log(`[vectorize] Login complete, session: ${finalSessionId}`);
+  lastSessionId = finalSessionId || null;
   return finalSessionId || "";
 }
 
@@ -180,7 +192,7 @@ async function fetchOtpFromGmail(): Promise<string> {
   throw new Error("Failed to find OTP email from vectorizer.io in Gmail");
 }
 
-async function waitForTask(taskId: string): Promise<void> {
+async function waitForTask(taskId: string): Promise<string> {
   const maxAttempts = 30;
   const pollInterval = 5000;
 
@@ -197,11 +209,12 @@ async function waitForTask(taskId: string): Promise<void> {
     );
 
     if (status === "finished") {
+      const output = JSON.stringify(watchResult.data, null, 2);
       console.log(
         `[vectorize] Task ${taskId} finished:`,
-        JSON.stringify(watchResult.data, null, 2).substring(0, 500)
+        output.substring(0, 500)
       );
-      return;
+      return output;
     }
 
     if (status === "stopped" || status === "failed") {
