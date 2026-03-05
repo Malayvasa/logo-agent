@@ -19,7 +19,7 @@ export async function commitAndCreatePR(
   const filePath = `src/assets/${slug}.svg`;
   const commitMessage = `feat: add ${slug} logo`;
   const prTitle = `Add ${slug} logo`;
-  const rawSvgUrl = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${branchName}/${filePath}`;
+  const rawSvgUrl = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${branchName}/${filePath}?v=${Date.now()}`;
   const prBody = [
     `Adds the ${slug} logo SVG to the asset library.`,
     ``,

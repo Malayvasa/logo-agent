@@ -80,7 +80,7 @@ export async function processLogo(request: LogoRequest): Promise<string> {
 
     // Step 5: Update comment with success + preview
     console.log(`[process-logo] Step 5: Updating Linear issue`);
-    const svgPreviewUrl = `https://raw.githubusercontent.com/ComposioHQ/logo-cdn/${branchName}/src/assets/${slug}.svg`;
+    const svgPreviewUrl = `https://raw.githubusercontent.com/ComposioHQ/logo-cdn/${branchName}/src/assets/${slug}.svg?v=${Date.now()}`;
     if (commentId) {
       await updateComment(
         commentId,

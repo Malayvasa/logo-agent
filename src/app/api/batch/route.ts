@@ -7,7 +7,18 @@ const LINEAR_CONNECTED_ACCOUNT = "ca_32jlkHR7XaS-";
 const LOGOS_PROJECT_ID = "ceb6c22a-2b56-477e-b705-92c7a2ae8f2e";
 const TRIAGE_STATE_NAME = "Triage";
 
-function deriveSlug(title: string): string {
+function deriveSlug(title: string, description?: string): string {
+  // First, check for explicit "Slug:" in the description
+  if (description) {
+    const slugMatch = description.match(/Slug:\s*(\S+)/i);
+    if (slugMatch) {
+      return slugMatch[1]
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]/g, "")
+        .trim();
+    }
+  }
+
   const bracketMatch = title.match(/^\[([^\]]+)\]/);
   if (bracketMatch) {
     return bracketMatch[1]
@@ -22,13 +33,20 @@ function deriveSlug(title: string): string {
     .replace(/[\s-]+/g, "_");
 }
 
+function isRepoUrl(url: string): boolean {
+  return url.includes("github.com/ComposioHQ/logo-cdn");
+}
+
 function extractUrl(text: string): string | null {
   const cleaned = text.replace(/\[([^\]]*)\]\(<([^>]*)>\)/g, "$1 $2");
   const websiteMatch = cleaned.match(/Website:?\s*(https?:\/\/[^\s<>"{}|\\^`\[\]]+)/i);
-  if (websiteMatch) return websiteMatch[1];
+  if (websiteMatch && !isRepoUrl(websiteMatch[1])) return websiteMatch[1];
   const urlRegex = /https?:\/\/[^\s<>"{}|\\^`\[\]]+/g;
   const matches = cleaned.match(urlRegex);
-  if (matches && matches.length > 0) return matches[0];
+  if (matches) {
+    const valid = matches.find((u) => !isRepoUrl(u));
+    if (valid) return valid;
+  }
   return null;
 }
 
@@ -73,7 +91,7 @@ export async function POST() {
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       for (const issue of triageIssues) {
-        const slug = deriveSlug(issue.title);
+        const slug = deriveSlug(issue.title, issue.description);
         const websiteUrl = extractUrl(issue.description || "");
 
         if (!websiteUrl) {

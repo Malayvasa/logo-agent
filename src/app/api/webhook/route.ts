@@ -68,7 +68,7 @@ export async function POST(request: NextRequest) {
 
     // Handle "Done" — merge the PR and comment
     if (currentState === "done") {
-      const slug = deriveSlug(issueData.title);
+      const slug = deriveSlug(issueData.title, issueData.description);
       console.log(`[webhook] Issue moved to Done, merging PR for ${slug}`);
 
       handleDone(issueData.id, slug).catch((err) => {
@@ -104,8 +104,8 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Derive a slug from the issue title
-    const slug = deriveSlug(issueData.title);
+    // Derive a slug from the issue title (or description)
+    const slug = deriveSlug(issueData.title, issueData.description);
 
     const logoRequest: LogoRequest = {
       issueId: issueData.id,
@@ -129,21 +129,26 @@ export async function POST(request: NextRequest) {
   }
 }
 
+function isRepoUrl(url: string): boolean {
+  return url.includes("github.com/ComposioHQ/logo-cdn");
+}
+
 function extractUrl(text: string): string | null {
   // Strip Linear markdown link syntax: [text](<url>) → text url
   const cleaned = text.replace(/\[([^\]]*)\]\(<([^>]*)>\)/g, "$1 $2");
 
   // First, look for explicit "Website" pattern (with or without colon)
   const websiteMatch = cleaned.match(/Website:?\s*(https?:\/\/[^\s<>"{}|\\^`\[\]]+)/i);
-  if (websiteMatch) {
+  if (websiteMatch && !isRepoUrl(websiteMatch[1])) {
     return websiteMatch[1];
   }
 
-  // Fall back to first URL in cleaned text
+  // Fall back to first URL in cleaned text that isn't our repo
   const urlRegex = /https?:\/\/[^\s<>"{}|\\^`\[\]]+/g;
   const matches = cleaned.match(urlRegex);
-  if (matches && matches.length > 0) {
-    return matches[0];
+  if (matches) {
+    const valid = matches.find((u) => !isRepoUrl(u));
+    if (valid) return valid;
   }
 
   // Also try matching bare domains like "example.com"
@@ -156,7 +161,18 @@ function extractUrl(text: string): string | null {
   return null;
 }
 
-function deriveSlug(title: string): string {
+function deriveSlug(title: string, description?: string): string {
+  // First, check for explicit "Slug:" in the description
+  if (description) {
+    const slugMatch = description.match(/Slug:\s*(\S+)/i);
+    if (slugMatch) {
+      return slugMatch[1]
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]/g, "")
+        .trim();
+    }
+  }
+
   // If title matches "[slug] ...", extract just the bracketed part
   const bracketMatch = title.match(/^\[([^\]]+)\]/);
   if (bracketMatch) {
