@@ -32,12 +32,46 @@ async function updateComment(commentId: string, body: string): Promise<void> {
   }
 }
 
+async function deleteOldAgentComments(issueId: string): Promise<void> {
+  try {
+    const result = await executeTool("LINEAR_GET_LINEAR_ISSUE", {
+      issue_id: issueId,
+    }, LINEAR_CONNECTED_ACCOUNT);
+
+    const comments = result.data?.issue?.comments?.nodes
+      || result.data?.comments?.nodes
+      || [];
+
+    const agentComments = comments.filter(
+      (c: { body?: string }) => c.body?.startsWith("**Logo Agent**")
+    );
+
+    console.log(`[process-logo] Found ${agentComments.length} old agent comments to delete`);
+
+    for (const comment of agentComments) {
+      try {
+        await executeTool("LINEAR_RUN_QUERY_OR_MUTATION", {
+          query_or_mutation: `mutation { commentDelete(id: "${comment.id}") { success } }`,
+        }, LINEAR_CONNECTED_ACCOUNT);
+        console.log(`[process-logo] Deleted old comment: ${comment.id}`);
+      } catch (err) {
+        console.error(`[process-logo] Failed to delete comment ${comment.id}:`, err);
+      }
+    }
+  } catch (err) {
+    console.error(`[process-logo] Failed to fetch old comments:`, err);
+  }
+}
+
 export async function processLogo(request: LogoRequest): Promise<string> {
   const { slug, websiteUrl, issueIdentifier } = request;
 
   console.log(
     `[process-logo] Starting: slug=${slug}, url=${websiteUrl}, issue=${issueIdentifier}`
   );
+
+  // Clean up old agent comments from previous runs
+  await deleteOldAgentComments(request.issueId);
 
   // Create initial status comment
   const commentId = await createComment(
