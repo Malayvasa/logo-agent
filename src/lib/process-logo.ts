@@ -2,7 +2,7 @@ import type { LogoRequest } from "@/types";
 import { fetchFavicon } from "./fetch-favicon";
 import { vectorize, ImageFetchError } from "./vectorize";
 import { normalizeSvg } from "./normalize-svg";
-import { commitAndCreatePR } from "./github";
+import { commitAndCreatePR, mergePRForSlug } from "./github";
 import { executeTool } from "./composio";
 
 const LINEAR_CONNECTED_ACCOUNT = "ca_32jlkHR7XaS-";
@@ -125,19 +125,24 @@ export async function processLogo(request: LogoRequest): Promise<string> {
 
     // Step 4: Commit and create PR
     console.log(`[process-logo] Step 4: Creating PR on GitHub`);
-    const { prUrl, branchName } = await commitAndCreatePR(
+    const { prUrl } = await commitAndCreatePR(
       slug,
       normalizedSvg,
       issueIdentifier
     );
 
-    // Step 5: Update comment with success + preview
-    console.log(`[process-logo] Step 5: Updating Linear issue`);
-    const svgPreviewUrl = `https://raw.githubusercontent.com/ComposioHQ/logo-cdn/${branchName}/src/assets/${slug}.svg?v=${Date.now()}`;
+    // Step 5: Merge the PR
+    console.log(`[process-logo] Step 5: Merging PR`);
+    await mergePRForSlug(slug);
+    console.log(`[process-logo] PR merged`);
+
+    // Step 6: Update comment with success + preview
+    console.log(`[process-logo] Step 6: Updating Linear issue`);
+    const svgPreviewUrl = `https://raw.githubusercontent.com/ComposioHQ/logo-cdn/master/src/assets/${slug}.svg?v=${Date.now()}`;
     if (commentId) {
       await updateComment(
         commentId,
-        `**Logo Agent** — done ✅\n\n**PR:** ${prUrl}\n\n![${slug} logo](${svgPreviewUrl})`
+        `**Logo Agent** — done ✅\n\n**Merged:** ${prUrl}\n\n![${slug} logo](${svgPreviewUrl})`
       );
     }
 

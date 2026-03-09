@@ -29,11 +29,11 @@ export async function fetchFavicon(
 
   // Strategy 2: Try common icon paths (often higher quality)
   const commonPaths = [
-    "/apple-touch-icon.png",
-    "/apple-touch-icon-precomposed.png",
     "/favicon-192x192.png",
     "/favicon-96x96.png",
     "/favicon.png",
+    "/apple-touch-icon.png",
+    "/apple-touch-icon-precomposed.png",
   ];
 
   for (const path of commonPaths) {
@@ -124,11 +124,11 @@ async function findIconsFromHtml(
 
   if (candidates.length === 0) return [];
 
-  // Sort: largest first, prefer apple-touch-icon
+  // Sort: largest first, prefer regular favicon over apple-touch
   candidates.sort((a, b) => {
     if (b.size !== a.size) return b.size - a.size;
-    if (a.isAppleTouch && !b.isAppleTouch) return -1;
-    if (!a.isAppleTouch && b.isAppleTouch) return 1;
+    if (!a.isAppleTouch && b.isAppleTouch) return -1;
+    if (a.isAppleTouch && !b.isAppleTouch) return 1;
     return 0;
   });
 
