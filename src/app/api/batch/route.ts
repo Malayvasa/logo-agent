@@ -1,9 +1,7 @@
 import { NextResponse } from "next/server";
-import { executeTool } from "@/lib/composio";
+import { executeTool, getLinearConnectedAccount } from "@/lib/composio";
 import { processLogo } from "@/lib/process-logo";
 import type { LogoRequest } from "@/types";
-
-const LINEAR_CONNECTED_ACCOUNT = "ca_32jlkHR7XaS-";
 const LOGOS_PROJECT_ID = "ceb6c22a-2b56-477e-b705-92c7a2ae8f2e";
 const TRIAGE_STATE_NAME = "Triage";
 
@@ -66,7 +64,7 @@ export async function POST() {
     const result = await executeTool("LINEAR_LIST_LINEAR_ISSUES", {
       project_id: LOGOS_PROJECT_ID,
       first: 250,
-    }, LINEAR_CONNECTED_ACCOUNT);
+    }, getLinearConnectedAccount());
 
     const issues = result.data?.issues || [];
     const triageIssues = issues.filter(

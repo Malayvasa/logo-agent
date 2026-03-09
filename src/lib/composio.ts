@@ -11,6 +11,12 @@ export function getComposio() {
   return _client;
 }
 
+export function getLinearConnectedAccount(): string {
+  const id = process.env.LINEAR_CONNECTED_ACCOUNT;
+  if (!id) throw new Error("LINEAR_CONNECTED_ACCOUNT is not set");
+  return id;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function executeTool(
   slug: string,

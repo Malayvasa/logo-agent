@@ -3,9 +3,7 @@ import { fetchFavicon } from "./fetch-favicon";
 import { vectorize, ImageFetchError } from "./vectorize";
 import { normalizeSvg } from "./normalize-svg";
 import { commitAndCreatePR, mergePRForSlug } from "./github";
-import { executeTool } from "./composio";
-
-const LINEAR_CONNECTED_ACCOUNT = "ca_32jlkHR7XaS-";
+import { executeTool, getLinearConnectedAccount } from "./composio";
 const IN_REVIEW_STATE_ID = "db21e0d5-b9b1-4861-ace9-7f2d2ebd85bb";
 
 async function createComment(issueId: string, body: string): Promise<string | null> {
@@ -13,7 +11,7 @@ async function createComment(issueId: string, body: string): Promise<string | nu
     const result = await executeTool("LINEAR_CREATE_LINEAR_COMMENT", {
       issue_id: issueId,
       body,
-    }, LINEAR_CONNECTED_ACCOUNT);
+    }, getLinearConnectedAccount());
     return result.data?.comment?.id || result.data?.id || null;
   } catch (err) {
     console.error(`[process-logo] Failed to create comment:`, err);
@@ -26,7 +24,7 @@ async function updateComment(commentId: string, body: string): Promise<void> {
     await executeTool("LINEAR_UPDATE_LINEAR_COMMENT", {
       comment_id: commentId,
       body,
-    }, LINEAR_CONNECTED_ACCOUNT);
+    }, getLinearConnectedAccount());
   } catch (err) {
     console.error(`[process-logo] Failed to update comment:`, err);
   }
@@ -36,7 +34,7 @@ async function deleteOldAgentComments(issueId: string): Promise<void> {
   try {
     const result = await executeTool("LINEAR_GET_LINEAR_ISSUE", {
       issue_id: issueId,
-    }, LINEAR_CONNECTED_ACCOUNT);
+    }, getLinearConnectedAccount());
 
     const comments = result.data?.issue?.comments?.nodes
       || result.data?.comments?.nodes
@@ -52,7 +50,7 @@ async function deleteOldAgentComments(issueId: string): Promise<void> {
       try {
         await executeTool("LINEAR_RUN_QUERY_OR_MUTATION", {
           query_or_mutation: `mutation { commentDelete(id: "${comment.id}") { success } }`,
-        }, LINEAR_CONNECTED_ACCOUNT);
+        }, getLinearConnectedAccount());
         console.log(`[process-logo] Deleted old comment: ${comment.id}`);
       } catch (err) {
         console.error(`[process-logo] Failed to delete comment ${comment.id}:`, err);
@@ -158,7 +156,7 @@ export async function processLogo(request: LogoRequest): Promise<string> {
       await executeTool("LINEAR_UPDATE_ISSUE", {
         issueId: request.issueId,
         stateId: IN_REVIEW_STATE_ID,
-      }, LINEAR_CONNECTED_ACCOUNT);
+      }, getLinearConnectedAccount());
       console.log(`[process-logo] Moved issue to In Review`);
     } catch (err) {
       console.error(`[process-logo] Failed to update issue state:`, err);

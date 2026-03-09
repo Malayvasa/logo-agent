@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getComposio } from "@/lib/composio";
+import { getComposio, executeTool, getLinearConnectedAccount } from "@/lib/composio";
 import { processLogo } from "@/lib/process-logo";
 import { handleDone } from "@/lib/handle-done";
 import type { LinearIssuePayload, LogoRequest } from "@/types";
@@ -113,6 +113,18 @@ export async function POST(request: NextRequest) {
 
     // Derive a slug from the issue title (or description)
     const slug = deriveSlug(issueData.title, issueData.description);
+
+    // Rename generic form submissions like "[Logo Request] submission" to "[slug] Add logo"
+    if (issueData.title === "[Logo Request] submission") {
+      const newTitle = `[${slug}] Add logo`;
+      console.log(`[webhook] Renaming issue from "${issueData.title}" to "${newTitle}"`);
+      executeTool("LINEAR_UPDATE_ISSUE", {
+        issueId: issueData.id,
+        title: newTitle,
+      }, getLinearConnectedAccount()).catch((err) => {
+        console.error(`[webhook] Failed to rename issue:`, err);
+      });
+    }
 
     const logoRequest: LogoRequest = {
       issueId: issueData.id,
@@ -230,7 +242,7 @@ function extractUrl(text: string): string | null {
 function deriveSlug(title: string, description?: string): string {
   // First, check for explicit "Slug:" in the description
   if (description) {
-    const slugMatch = description.match(/Slug:\s*(\S+)/i);
+    const slugMatch = description.match(/Slug\s*:\s*(\S+)/i);
     if (slugMatch) {
       return slugMatch[1]
         .toLowerCase()

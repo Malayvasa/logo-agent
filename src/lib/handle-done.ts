@@ -1,7 +1,5 @@
 import { mergePRForSlug } from "./github";
-import { executeTool } from "./composio";
-
-const LINEAR_CONNECTED_ACCOUNT = "ca_32jlkHR7XaS-";
+import { executeTool, getLinearConnectedAccount } from "./composio";
 
 export async function handleDone(issueId: string, slug: string): Promise<void> {
   try {
@@ -17,7 +15,7 @@ export async function handleDone(issueId: string, slug: string): Promise<void> {
     await executeTool("LINEAR_CREATE_LINEAR_COMMENT", {
       issue_id: issueId,
       body: `**Logo Agent** — merged ✅\n\nPR merged: ${prUrl}\n\nThe \`${slug}\` logo is now live in the CDN.`,
-    }, LINEAR_CONNECTED_ACCOUNT);
+    }, getLinearConnectedAccount());
     console.log(`[handle-done] Comment added to issue`);
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
@@ -26,6 +24,6 @@ export async function handleDone(issueId: string, slug: string): Promise<void> {
     await executeTool("LINEAR_CREATE_LINEAR_COMMENT", {
       issue_id: issueId,
       body: `**Logo Agent** — merge failed ❌\n\n**Error:** ${errorMessage}`,
-    }, LINEAR_CONNECTED_ACCOUNT).catch(() => {});
+    }, getLinearConnectedAccount()).catch(() => {});
   }
 }
