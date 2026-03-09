@@ -4,6 +4,9 @@ import { processLogo } from "@/lib/process-logo";
 import { handleDone } from "@/lib/handle-done";
 import type { LinearIssuePayload, LogoRequest } from "@/types";
 
+// Dedup: track slugs currently being processed to avoid duplicate runs from rapid webhook fires
+const processing = new Set<string>();
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.text();
@@ -125,6 +128,12 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    // Dedup: skip if this slug is already being processed
+    if (processing.has(slug)) {
+      console.log(`[webhook] Slug "${slug}" already processing, skipping duplicate`);
+      return NextResponse.json({ status: "skipped", reason: "already processing" });
+    }
+
     const logoRequest: LogoRequest = {
       issueId: issueData.id,
       issueIdentifier: issueData.identifier,
@@ -133,9 +142,14 @@ export async function POST(request: NextRequest) {
     };
 
     // Process asynchronously — respond immediately to avoid webhook timeout
-    processLogo(logoRequest).catch((err) => {
-      console.error(`[webhook] processLogo failed for ${slug}:`, err);
-    });
+    processing.add(slug);
+    processLogo(logoRequest)
+      .catch((err) => {
+        console.error(`[webhook] processLogo failed for ${slug}:`, err);
+      })
+      .finally(() => {
+        processing.delete(slug);
+      });
 
     return NextResponse.json({ status: "processing", slug, websiteUrl });
   } catch (err) {
