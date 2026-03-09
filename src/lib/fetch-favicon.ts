@@ -1,5 +1,5 @@
 interface FaviconResult {
-  imageUrl: string;
+  candidates: string[];
 }
 
 export async function fetchFavicon(
@@ -9,19 +9,22 @@ export async function fetchFavicon(
   const origin = url.origin;
   const domain = url.hostname;
 
-  // Strategy 1: Parse HTML for a large icon (>= 64px)
+  const candidates: string[] = [];
+
+  // Strategy 1: Parse HTML for icons
   console.log(`[fetch-favicon] Fetching HTML from ${origin}`);
-  let htmlIcon: { href: string; size: number } | null = null;
+  let htmlIcons: { href: string; size: number }[] = [];
   try {
-    htmlIcon = await findBestIconFromHtml(origin);
+    htmlIcons = await findIconsFromHtml(origin);
   } catch (err) {
     console.log(`[fetch-favicon] HTML parsing failed: ${err}`);
   }
 
-  // If HTML found a large icon (known size >= 64px), use it directly
-  if (htmlIcon && htmlIcon.size >= 64) {
-    console.log(`[fetch-favicon] Using HTML icon: ${htmlIcon.href} (${htmlIcon.size}px)`);
-    return { imageUrl: htmlIcon.href };
+  // Add large HTML icons first (known size >= 64px)
+  const largeHtmlIcons = htmlIcons.filter((i) => i.size >= 64);
+  for (const icon of largeHtmlIcons) {
+    console.log(`[fetch-favicon] HTML icon candidate: ${icon.href} (${icon.size}px)`);
+    candidates.push(icon.href);
   }
 
   // Strategy 2: Try common icon paths (often higher quality)
@@ -40,8 +43,10 @@ export async function fetchFavicon(
       if (res.ok) {
         const contentType = res.headers.get("content-type") || "";
         if (contentType.startsWith("image/")) {
-          console.log(`[fetch-favicon] Found icon at common path: ${testUrl}`);
-          return { imageUrl: testUrl };
+          if (!candidates.includes(testUrl)) {
+            console.log(`[fetch-favicon] Common path candidate: ${testUrl}`);
+            candidates.push(testUrl);
+          }
         }
       }
     } catch {
@@ -49,27 +54,33 @@ export async function fetchFavicon(
     }
   }
 
-  // Strategy 3: Use the HTML icon if we found one (even with unknown size)
-  if (htmlIcon) {
-    console.log(`[fetch-favicon] Using HTML icon (unknown size): ${htmlIcon.href}`);
-    return { imageUrl: htmlIcon.href };
+  // Strategy 3: Add remaining HTML icons (unknown/small size)
+  const smallHtmlIcons = htmlIcons.filter((i) => i.size < 64);
+  for (const icon of smallHtmlIcons) {
+    if (!candidates.includes(icon.href)) {
+      console.log(`[fetch-favicon] HTML icon candidate (small/unknown): ${icon.href}`);
+      candidates.push(icon.href);
+    }
   }
 
   // Strategy 4: Google's favicon API (always works, variable quality)
   const googleUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=128`;
-  console.log(`[fetch-favicon] Falling back to Google API: ${googleUrl}`);
-  return { imageUrl: googleUrl };
+  console.log(`[fetch-favicon] Adding Google API fallback: ${googleUrl}`);
+  candidates.push(googleUrl);
+
+  console.log(`[fetch-favicon] Total candidates: ${candidates.length}`);
+  return { candidates };
 }
 
-async function findBestIconFromHtml(
+async function findIconsFromHtml(
   origin: string
-): Promise<{ href: string; size: number } | null> {
+): Promise<{ href: string; size: number }[]> {
   const res = await fetch(origin, {
     redirect: "follow",
     headers: { "User-Agent": "Mozilla/5.0 (compatible; LogoAgent/1.0)" },
   });
 
-  if (!res.ok) return null;
+  if (!res.ok) return [];
 
   const html = await res.text();
 
@@ -111,7 +122,7 @@ async function findBestIconFromHtml(
     candidates.push({ href: fullUrl, size, isAppleTouch });
   }
 
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) return [];
 
   // Sort: largest first, prefer apple-touch-icon
   candidates.sort((a, b) => {
@@ -122,8 +133,8 @@ async function findBestIconFromHtml(
   });
 
   console.log(
-    `[fetch-favicon] Found ${candidates.length} icon candidates, best: ${candidates[0].href} (${candidates[0].size}px)`
+    `[fetch-favicon] Found ${candidates.length} icon candidates from HTML`
   );
 
-  return { href: candidates[0].href, size: candidates[0].size };
+  return candidates.map((c) => ({ href: c.href, size: c.size }));
 }

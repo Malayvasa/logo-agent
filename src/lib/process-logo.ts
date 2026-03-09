@@ -1,6 +1,6 @@
 import type { LogoRequest } from "@/types";
 import { fetchFavicon } from "./fetch-favicon";
-import { vectorize } from "./vectorize";
+import { vectorize, ImageFetchError } from "./vectorize";
 import { normalizeSvg } from "./normalize-svg";
 import { commitAndCreatePR } from "./github";
 import { executeTool } from "./composio";
@@ -46,21 +46,40 @@ export async function processLogo(request: LogoRequest): Promise<string> {
   );
 
   try {
-    // Step 1: Fetch favicon via HTTP
+    // Step 1: Fetch favicon candidates
     console.log(`[process-logo] Step 1: Fetching favicon from ${websiteUrl}`);
-    const { imageUrl } = await fetchFavicon(websiteUrl);
-    console.log(`[process-logo] Favicon fetched: ${imageUrl}`);
+    const { candidates } = await fetchFavicon(websiteUrl);
+    console.log(`[process-logo] Got ${candidates.length} favicon candidates`);
 
     if (commentId) {
-      await updateComment(commentId, `**Logo Agent** processing **${slug}**\n\n✅ Favicon fetched\n⏳ Vectorizing image...`);
+      await updateComment(commentId, `**Logo Agent** processing **${slug}**\n\n✅ Favicon candidates found (${candidates.length})\n⏳ Vectorizing image...`);
     }
 
-    // Step 2: Vectorize using vectorizer.ai API
+    // Step 2: Try each candidate until one vectorizes successfully
     console.log(`[process-logo] Step 2: Vectorizing`);
-    const { svgContent: rawSvg } = await vectorize(imageUrl);
-    console.log(
-      `[process-logo] Vectorized SVG received (${rawSvg.length} chars)`
-    );
+    let rawSvg: string | null = null;
+    let lastError: Error | null = null;
+
+    for (const candidate of candidates) {
+      try {
+        console.log(`[process-logo] Trying candidate: ${candidate}`);
+        const result = await vectorize(candidate);
+        rawSvg = result.svgContent;
+        console.log(`[process-logo] Vectorized SVG received (${rawSvg.length} chars)`);
+        break;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        console.log(`[process-logo] Candidate failed: ${candidate} — ${lastError.message}`);
+        // Only retry on image fetch/format errors, not on vectorizer API errors
+        if (!(err instanceof ImageFetchError)) {
+          throw lastError;
+        }
+      }
+    }
+
+    if (!rawSvg) {
+      throw lastError || new Error("No favicon candidates available");
+    }
 
     if (commentId) {
       await updateComment(commentId, `**Logo Agent** processing **${slug}**\n\n✅ Favicon fetched\n✅ Vectorized to SVG\n⏳ Creating PR...`);

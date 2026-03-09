@@ -78,10 +78,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ status: "merging", slug });
     }
 
-    // Handle "Todo" — start the logo pipeline
-    if (currentState !== "todo") {
+    // Handle "Todo" or "Triage" — start the logo pipeline
+    if (currentState !== "todo" && currentState !== "triage") {
       console.log(
-        `[webhook] Issue state is "${issueData?.state?.name}", not "Todo" or "Done" — skipping`
+        `[webhook] Issue state is "${issueData?.state?.name}", not "Todo", "Triage", or "Done" — skipping`
       );
       return NextResponse.json({
         status: "skipped",

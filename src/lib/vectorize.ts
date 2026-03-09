@@ -1,5 +1,12 @@
 import sharp from "sharp";
 
+export class ImageFetchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ImageFetchError";
+  }
+}
+
 interface VectorizeResult {
   svgContent: string;
 }
@@ -24,7 +31,7 @@ export async function vectorize(
   // Download the image
   const imageResponse = await fetch(faviconImageUrl);
   if (!imageResponse.ok) {
-    throw new Error(
+    throw new ImageFetchError(
       `Failed to fetch image (${imageResponse.status}): ${faviconImageUrl}`
     );
   }
@@ -34,7 +41,7 @@ export async function vectorize(
   try {
     imageBuffer = await sharp(imageBuffer).png().toBuffer();
   } catch (err) {
-    throw new Error(
+    throw new ImageFetchError(
       `Image format not supported: ${err instanceof Error ? err.message : String(err)}`
     );
   }
