@@ -96,23 +96,22 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    if (!issueData?.description) {
-      console.log("[webhook] No description in issue, skipping");
-      return NextResponse.json({ status: "skipped", reason: "no description" });
-    }
-
-    // Extract website URL from the issue description
-    const websiteUrl = extractUrl(issueData.description);
-    if (!websiteUrl) {
-      console.log("[webhook] No URL found in issue description, skipping");
-      return NextResponse.json({
-        status: "skipped",
-        reason: "no URL in description",
-      });
-    }
-
     // Derive a slug from the issue title (or description)
     const slug = deriveSlug(issueData.title, issueData.description);
+
+    // Extract website URL from the issue description, fall back to Composio toolkit API
+    let websiteUrl = extractUrl(issueData.description || "");
+    if (!websiteUrl) {
+      console.log("[webhook] No URL in description, trying Composio toolkit API for slug:", slug);
+      websiteUrl = await fetchToolkitUrl(slug);
+    }
+    if (!websiteUrl) {
+      console.log("[webhook] No URL found for issue, skipping");
+      return NextResponse.json({
+        status: "skipped",
+        reason: "no URL in description or toolkit API",
+      });
+    }
 
     // Rename generic form submissions like "[Logo Request] submission" to "[slug] Add logo"
     if (issueData.title === "[Logo Request] submission") {
@@ -265,4 +264,30 @@ function deriveSlug(title: string, description?: string): string {
     .replace(/[^a-z0-9\s_-]/g, "")
     .trim()
     .replace(/[\s-]+/g, "_");
+}
+
+async function fetchToolkitUrl(slug: string): Promise<string | null> {
+  try {
+    const apiKey = process.env.COMPOSIO_API_KEY;
+    if (!apiKey) return null;
+
+    // Strip leading underscores (e.g. "_2chat" → "2chat") for API lookup
+    const lookupSlug = slug.replace(/^_+/, "");
+    const res = await fetch(`https://backend.composio.dev/api/v3/toolkits/${lookupSlug}`, {
+      headers: { "x-api-key": apiKey },
+    });
+
+    if (!res.ok) return null;
+
+    const data = await res.json();
+    const appUrl = data?.meta?.app_url;
+    if (appUrl) {
+      console.log(`[webhook] Toolkit API returned app_url: ${appUrl}`);
+      return appUrl;
+    }
+    return null;
+  } catch (err) {
+    console.log(`[webhook] Toolkit API lookup failed for ${slug}:`, err);
+    return null;
+  }
 }
