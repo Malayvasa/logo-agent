@@ -70,8 +70,8 @@ export async function processLogo(request: LogoRequest): Promise<string> {
     `[process-logo] Starting: slug=${slug}, url=${websiteUrl}, issue=${issueIdentifier}`
   );
 
-  // Clean up old agent comments from previous runs (fire and forget)
-  deleteOldAgentComments(request.issueId);
+  // Clean up old agent comments before creating new ones
+  await deleteOldAgentComments(request.issueId);
 
   // Create initial status comment
   const commentId = await createComment(
