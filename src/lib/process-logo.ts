@@ -48,7 +48,7 @@ async function deleteOldAgentComments(issueId: string): Promise<void> {
 
     console.log(`[process-logo] Found ${agentComments.length} old agent comments to delete`);
 
-    for (const comment of agentComments) {
+    await Promise.all(agentComments.map(async (comment: { id: string }) => {
       try {
         await executeTool("LINEAR_RUN_QUERY_OR_MUTATION", {
           query_or_mutation: `mutation { commentDelete(id: "${comment.id}") { success } }`,
@@ -57,7 +57,7 @@ async function deleteOldAgentComments(issueId: string): Promise<void> {
       } catch (err) {
         console.error(`[process-logo] Failed to delete comment ${comment.id}:`, err);
       }
-    }
+    }));
   } catch (err) {
     console.error(`[process-logo] Failed to fetch old comments:`, err);
   }
@@ -70,8 +70,8 @@ export async function processLogo(request: LogoRequest): Promise<string> {
     `[process-logo] Starting: slug=${slug}, url=${websiteUrl}, issue=${issueIdentifier}`
   );
 
-  // Clean up old agent comments from previous runs
-  await deleteOldAgentComments(request.issueId);
+  // Clean up old agent comments from previous runs (fire and forget)
+  deleteOldAgentComments(request.issueId);
 
   // Create initial status comment
   const commentId = await createComment(
@@ -81,8 +81,15 @@ export async function processLogo(request: LogoRequest): Promise<string> {
 
   try {
     // Step 1: Fetch favicon candidates
-    console.log(`[process-logo] Step 1: Fetching favicon from ${websiteUrl}`);
-    const { candidates } = await fetchFavicon(websiteUrl);
+    let candidates: string[];
+    if (request.imageUrl) {
+      console.log(`[process-logo] Step 1: Using provided image URL: ${request.imageUrl}`);
+      candidates = [request.imageUrl];
+    } else {
+      console.log(`[process-logo] Step 1: Fetching favicon from ${websiteUrl}`);
+      const result = await fetchFavicon(websiteUrl);
+      candidates = result.candidates;
+    }
     console.log(`[process-logo] Got ${candidates.length} favicon candidates`);
 
     if (commentId) {

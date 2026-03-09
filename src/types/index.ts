@@ -15,4 +15,5 @@ export interface LogoRequest {
   issueIdentifier: string;
   slug: string;
   websiteUrl: string;
+  imageUrl?: string;
 }

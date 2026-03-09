@@ -44,7 +44,14 @@ export async function POST(request: NextRequest) {
     // Composio wraps Linear data as: { data: { action, data: { ...issueFields } } }
     // Handle both nested and flat structures
     const rawData = payload.data;
-    const issueData = (rawData?.data || rawData) as LinearIssuePayload;
+    const innerData = rawData?.data || rawData;
+
+    // Detect comment events: comment payloads have a `body` and `issue` field
+    if (innerData?.body && innerData?.issue && !innerData?.state) {
+      return handleCommentEvent(innerData);
+    }
+
+    const issueData = innerData as LinearIssuePayload;
 
     console.log(
       "[webhook] Issue state:",
@@ -127,6 +134,65 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     );
   }
+}
+
+const IMAGE_URL_REGEX = /https?:\/\/[^\s<>"{}|\\^`\[\]]+\.(?:png|jpg|jpeg|webp|svg|ico)(?:\?[^\s]*)?/i;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function handleCommentEvent(commentData: any): Promise<NextResponse> {
+  const body: string = commentData.body || "";
+  const issue = commentData.issue;
+
+  // Skip agent's own comments
+  if (body.startsWith("**Logo Agent**")) {
+    return NextResponse.json({ status: "skipped", reason: "agent comment" });
+  }
+
+  // Check if the comment contains an image URL
+  const imageMatch = body.match(IMAGE_URL_REGEX);
+  if (!imageMatch) {
+    console.log("[webhook] Comment has no image URL, skipping");
+    return NextResponse.json({ status: "skipped", reason: "no image URL in comment" });
+  }
+
+  const imageUrl = imageMatch[0];
+  console.log(`[webhook] Comment contains image URL: ${imageUrl}`);
+
+  // We need issue details — the comment payload may have partial issue data
+  const issueId = issue?.id;
+  const issueIdentifier = issue?.identifier;
+  const issueTitle = issue?.title;
+  const issueDescription = issue?.description;
+  const projectName = issue?.project?.name;
+
+  if (!issueId || !issueTitle) {
+    console.log("[webhook] Comment missing issue details, skipping");
+    return NextResponse.json({ status: "skipped", reason: "missing issue details" });
+  }
+
+  if (projectName && projectName !== "Logos") {
+    console.log(`[webhook] Comment on non-Logos project "${projectName}", skipping`);
+    return NextResponse.json({ status: "skipped", reason: "not Logos project" });
+  }
+
+  const slug = deriveSlug(issueTitle, issueDescription);
+  const websiteUrl = extractUrl(issueDescription || "") || "https://unknown";
+
+  console.log(`[webhook] Comment-triggered rerun for ${slug} with image: ${imageUrl}`);
+
+  const logoRequest: LogoRequest = {
+    issueId,
+    issueIdentifier: issueIdentifier || slug,
+    slug,
+    websiteUrl,
+    imageUrl,
+  };
+
+  processLogo(logoRequest).catch((err) => {
+    console.error(`[webhook] processLogo (comment) failed for ${slug}:`, err);
+  });
+
+  return NextResponse.json({ status: "processing", slug, imageUrl });
 }
 
 function isRepoUrl(url: string): boolean {
