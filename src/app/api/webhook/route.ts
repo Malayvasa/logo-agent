@@ -281,27 +281,84 @@ function deriveSlug(title: string, description?: string): string {
 }
 
 async function fetchToolkitUrl(slug: string): Promise<string | null> {
-  try {
-    const apiKey = process.env.COMPOSIO_API_KEY;
-    if (!apiKey) return null;
+  const apiKey = process.env.COMPOSIO_API_KEY;
+  if (!apiKey) return null;
 
-    // Strip leading underscores (e.g. "_2chat" → "2chat") for API lookup
-    const lookupSlug = slug.replace(/^_+/, "");
+  const lookupSlug = slug.replace(/^_+/, "");
+
+  // Strategy 1: Toolkit API (meta.app_url)
+  try {
     const res = await fetch(`https://backend.composio.dev/api/v3/toolkits/${lookupSlug}`, {
       headers: { "x-api-key": apiKey },
     });
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.meta?.app_url) {
+        console.log(`[webhook] Toolkit API returned app_url: ${data.meta.app_url}`);
+        return data.meta.app_url;
+      }
+    }
+  } catch (err) {
+    console.log(`[webhook] Toolkit API lookup failed for ${slug}:`, err);
+  }
+
+  // Strategy 2: Search using app description via Composio Search
+  console.log(`[webhook] No toolkit URL for ${slug}, trying search fallback`);
+  return searchForWebsite(slug, apiKey);
+}
+
+async function searchForWebsite(slug: string, apiKey: string): Promise<string | null> {
+  try {
+    // Get app description
+    let description = "";
+    try {
+      const lookupSlug = slug.replace(/^_+/, "");
+      const appsRes = await fetch(`https://backend.composio.dev/api/v1/apps?limit=1000`, {
+        headers: { "x-api-key": apiKey },
+      });
+      if (appsRes.ok) {
+        const appsData = await appsRes.json();
+        const app = (appsData.items || []).find((a: { key: string }) => a.key === lookupSlug);
+        description = app?.description || "";
+      }
+    } catch { /* continue without description */ }
+
+    const query = description
+      ? `${slug} ${description.substring(0, 60)} official website`
+      : `${slug} software official website`;
+
+    console.log(`[webhook] Searching for: ${query}`);
+
+    const res = await fetch(
+      "https://backend.composio.dev/api/v2/actions/COMPOSIO_SEARCH_SEARCH/execute",
+      {
+        method: "POST",
+        headers: { "x-api-key": apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          appName: "composio_search",
+          entityId: "default",
+          input: { query },
+        }),
+      }
+    );
 
     if (!res.ok) return null;
 
     const data = await res.json();
-    const appUrl = data?.meta?.app_url;
-    if (appUrl) {
-      console.log(`[webhook] Toolkit API returned app_url: ${appUrl}`);
-      return appUrl;
+    const results = data?.data?.results?.organic_results || [];
+
+    if (results.length > 0) {
+      const link = results[0].link;
+      const url = new URL(link);
+      const domain = url.hostname.replace(/^www\./, "");
+      const websiteUrl = `https://${domain}`;
+      console.log(`[webhook] Search found domain for ${slug}: ${websiteUrl}`);
+      return websiteUrl;
     }
+
     return null;
   } catch (err) {
-    console.log(`[webhook] Toolkit API lookup failed for ${slug}:`, err);
+    console.log(`[webhook] Search failed for ${slug}:`, err);
     return null;
   }
 }

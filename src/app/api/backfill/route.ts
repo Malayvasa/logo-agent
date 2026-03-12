@@ -24,35 +24,103 @@ interface BackfillResult {
 
 async function getWebsiteUrl(slug: string): Promise<string | null> {
   if (!COMPOSIO_API_KEY) return null;
+
+  const lookupSlug = slug.replace(/^_+/, "");
+
+  // Strategy 1: Toolkit API (meta.app_url)
   try {
-    const lookupSlug = slug.replace(/^_+/, "");
     const res = await fetch(`https://backend.composio.dev/api/v3/toolkits/${lookupSlug}`, {
       headers: { "x-api-key": COMPOSIO_API_KEY },
     });
-    if (!res.ok) return guessWebsiteUrl(slug);
-    const data = await res.json();
-    return data?.meta?.app_url || guessWebsiteUrl(slug);
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.meta?.app_url) {
+        console.log(`[backfill] Toolkit API URL for ${slug}: ${data.meta.app_url}`);
+        return data.meta.app_url;
+      }
+    }
   } catch {
-    return guessWebsiteUrl(slug);
+    console.log(`[backfill] Toolkit API failed for ${slug}`);
+  }
+
+  // Strategy 2: Search using app description via Composio Search
+  console.log(`[backfill] No toolkit URL for ${slug}, trying search fallback`);
+  return searchForWebsite(slug);
+}
+
+async function getAppDescription(slug: string): Promise<string> {
+  if (!COMPOSIO_API_KEY) return "";
+  try {
+    const lookupSlug = slug.replace(/^_+/, "");
+    const res = await fetch(`https://backend.composio.dev/api/v1/apps?limit=1000`, {
+      headers: { "x-api-key": COMPOSIO_API_KEY },
+    });
+    if (!res.ok) return "";
+    const data = await res.json();
+    const app = (data.items || []).find((a: { key: string }) => a.key === lookupSlug);
+    return app?.description || "";
+  } catch {
+    return "";
   }
 }
 
-function guessWebsiteUrl(slug: string): string {
-  // Strip common suffixes and clean up the slug to guess a domain
-  const clean = slug
-    .replace(/_mcp$/, "")
-    .replace(/_oauth$/, "")
-    .replace(/_api$/, "")
-    .replace(/_/g, "");
-  return `https://${clean}.com`;
+async function searchForWebsite(slug: string): Promise<string | null> {
+  if (!COMPOSIO_API_KEY) return null;
+  try {
+    const description = await getAppDescription(slug);
+    const query = description
+      ? `${slug} ${description.substring(0, 60)} official website`
+      : `${slug} software official website`;
+
+    console.log(`[backfill] Searching for: ${query}`);
+
+    const res = await fetch(
+      "https://backend.composio.dev/api/v2/actions/COMPOSIO_SEARCH_SEARCH/execute",
+      {
+        method: "POST",
+        headers: {
+          "x-api-key": COMPOSIO_API_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          appName: "composio_search",
+          entityId: "default",
+          input: { query },
+        }),
+      }
+    );
+
+    if (!res.ok) {
+      console.log(`[backfill] Search API returned ${res.status}`);
+      return null;
+    }
+
+    const data = await res.json();
+    const results = data?.data?.results?.organic_results || [];
+
+    if (results.length > 0) {
+      const link = results[0].link;
+      const url = new URL(link);
+      const domain = url.hostname.replace(/^www\./, "");
+      const websiteUrl = `https://${domain}`;
+      console.log(`[backfill] Search found domain for ${slug}: ${websiteUrl}`);
+      return websiteUrl;
+    }
+
+    console.log(`[backfill] Search returned no results for ${slug}`);
+    return null;
+  } catch (err) {
+    console.log(`[backfill] Search failed for ${slug}:`, err);
+    return null;
+  }
 }
 
-async function processOne(slug: string, autoMerge: boolean): Promise<BackfillResult> {
+async function processOne(slug: string, autoMerge: boolean, websiteUrlOverride?: string): Promise<BackfillResult> {
   console.log(`[backfill] Processing: ${slug}`);
 
   try {
-    // Step 1: Get website URL
-    const websiteUrl = await getWebsiteUrl(slug);
+    // Step 1: Get website URL (use override if provided)
+    const websiteUrl = websiteUrlOverride || await getWebsiteUrl(slug);
     if (!websiteUrl) {
       console.log(`[backfill] No website URL for ${slug}, skipping`);
       return { slug, status: "skipped", error: "No website URL found" };
@@ -118,12 +186,13 @@ async function processOne(slug: string, autoMerge: boolean): Promise<BackfillRes
 //
 // Body:
 //   slugs: string[]          — list of slugs to process (required)
+//   urlOverrides?: Record<string, string> — slug→websiteUrl overrides
 //   autoMerge?: boolean      — auto-merge PRs after creation (default: false)
 //   batchSize?: number       — how many to process per batch (default: 5)
 //
 export async function POST(request: NextRequest) {
   try {
-    const { slugs, autoMerge = false, batchSize = 5 } = await request.json();
+    const { slugs, urlOverrides = {}, autoMerge = false, batchSize = 5 } = await request.json();
 
     if (!Array.isArray(slugs) || slugs.length === 0) {
       return NextResponse.json({ error: "slugs must be a non-empty array" }, { status: 400 });
@@ -149,7 +218,7 @@ export async function POST(request: NextRequest) {
 
         // Process batch sequentially to be kind to APIs
         for (const slug of batch) {
-          const result = await processOne(slug, autoMerge);
+          const result = await processOne(slug, autoMerge, urlOverrides[slug]);
           activeBackfill!.results.push(result);
           activeBackfill!.processed++;
         }
