@@ -5,7 +5,25 @@ import { normalizeSvg } from "@/lib/normalize-svg";
 import { commitAndCreatePR, mergePRForSlug } from "@/lib/github";
 
 const COMPOSIO_API_KEY = process.env.COMPOSIO_API_KEY;
-const LINEAR_CONNECTED_ACCOUNT = process.env.LINEAR_CONNECTED_ACCOUNT_ID || "1063cb72-2963-4af8-adf1-1cdfde2637b2";
+let _linearConnectedAccount: string | null = null;
+
+async function getLinearConnectedAccount(): Promise<string | null> {
+  if (_linearConnectedAccount) return _linearConnectedAccount;
+  if (!COMPOSIO_API_KEY) return null;
+  try {
+    const res = await fetch("https://backend.composio.dev/api/v1/connectedAccounts?appNames=linear", {
+      headers: { "x-api-key": COMPOSIO_API_KEY },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const active = (data.items || []).find((a: { status: string }) => a.status === "ACTIVE");
+    _linearConnectedAccount = active?.id || null;
+    console.log(`[backfill] Linear connected account: ${_linearConnectedAccount}`);
+    return _linearConnectedAccount;
+  } catch {
+    return null;
+  }
+}
 const DESIGN_TEAM_ID = "48c4ab35-8398-408d-967b-881b13d7ca57";
 const LOGOS_PROJECT_ID = "ceb6c22a-2b56-477e-b705-92c7a2ae8f2e";
 const IN_REVIEW_STATE_ID = "db21e0d5-b9b1-4861-ace9-7f2d2ebd85bb";
@@ -150,7 +168,7 @@ async function createLinearIssueForReview(slug: string, prUrl: string, websiteUr
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        connectedAccountId: LINEAR_CONNECTED_ACCOUNT,
+        connectedAccountId: await getLinearConnectedAccount(),
         input: {
           title: `[${slug}] Add logo`,
           description,
