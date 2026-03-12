@@ -2,17 +2,23 @@ import { NextRequest, NextResponse } from "next/server";
 import { fetchFavicon } from "@/lib/fetch-favicon";
 import { vectorize, ImageFetchError } from "@/lib/vectorize";
 import { normalizeSvg } from "@/lib/normalize-svg";
-import { commitAndCreatePR } from "@/lib/github";
+import { commitAndCreatePR, mergePRForSlug } from "@/lib/github";
 
 const COMPOSIO_API_KEY = process.env.COMPOSIO_API_KEY;
 
 // Track active backfill to prevent duplicates
-let activeBackfill: { total: number; processed: number; results: BackfillResult[] } | null = null;
+let activeBackfill: {
+  total: number;
+  processed: number;
+  autoMerge: boolean;
+  results: BackfillResult[];
+} | null = null;
 
 interface BackfillResult {
   slug: string;
   status: "success" | "failed" | "skipped";
   prUrl?: string;
+  merged?: boolean;
   error?: string;
 }
 
@@ -31,7 +37,7 @@ async function getWebsiteUrl(slug: string): Promise<string | null> {
   }
 }
 
-async function processOne(slug: string): Promise<BackfillResult> {
+async function processOne(slug: string, autoMerge: boolean): Promise<BackfillResult> {
   console.log(`[backfill] Processing: ${slug}`);
 
   try {
@@ -43,10 +49,9 @@ async function processOne(slug: string): Promise<BackfillResult> {
     }
 
     // Step 2: Fetch favicon candidates
-    let candidates: string[];
     console.log(`[backfill] Fetching favicon from ${websiteUrl}`);
     const result = await fetchFavicon(websiteUrl);
-    candidates = result.candidates;
+    const candidates = result.candidates;
 
     if (candidates.length === 0) {
       return { slug, status: "skipped", error: "No favicon candidates found" };
@@ -75,11 +80,23 @@ async function processOne(slug: string): Promise<BackfillResult> {
     // Step 4: Normalize to 128x128
     const normalizedSvg = normalizeSvg(rawSvg);
 
-    // Step 5: Create PR (no auto-merge)
+    // Step 5: Create PR
     const { prUrl } = await commitAndCreatePR(slug, normalizedSvg, "backfill");
     console.log(`[backfill] PR created for ${slug}: ${prUrl}`);
 
-    return { slug, status: "success", prUrl };
+    // Step 6: Auto-merge if enabled
+    let merged = false;
+    if (autoMerge) {
+      try {
+        await mergePRForSlug(slug);
+        merged = true;
+        console.log(`[backfill] Auto-merged PR for ${slug}`);
+      } catch (err) {
+        console.error(`[backfill] Auto-merge failed for ${slug}:`, err);
+      }
+    }
+
+    return { slug, status: "success", prUrl, merged };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[backfill] Failed for ${slug}: ${msg}`);
@@ -88,9 +105,15 @@ async function processOne(slug: string): Promise<BackfillResult> {
 }
 
 // POST /api/backfill — start processing
+//
+// Body:
+//   slugs: string[]          — list of slugs to process (required)
+//   autoMerge?: boolean      — auto-merge PRs after creation (default: false)
+//   batchSize?: number       — how many to process per batch (default: 5)
+//
 export async function POST(request: NextRequest) {
   try {
-    const { slugs, batchSize = 5 } = await request.json();
+    const { slugs, autoMerge = false, batchSize = 5 } = await request.json();
 
     if (!Array.isArray(slugs) || slugs.length === 0) {
       return NextResponse.json({ error: "slugs must be a non-empty array" }, { status: 400 });
@@ -107,7 +130,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Initialize tracking
-    activeBackfill = { total: slugs.length, processed: 0, results: [] };
+    activeBackfill = { total: slugs.length, processed: 0, autoMerge, results: [] };
 
     // Process in batches (don't await — respond immediately)
     const processBatches = async () => {
@@ -116,7 +139,7 @@ export async function POST(request: NextRequest) {
 
         // Process batch sequentially to be kind to APIs
         for (const slug of batch) {
-          const result = await processOne(slug);
+          const result = await processOne(slug, autoMerge);
           activeBackfill!.results.push(result);
           activeBackfill!.processed++;
         }
@@ -129,7 +152,9 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      console.log(`[backfill] Complete! ${activeBackfill!.results.filter(r => r.status === 'success').length} succeeded`);
+      const succeeded = activeBackfill!.results.filter(r => r.status === 'success').length;
+      const mergedCount = activeBackfill!.results.filter(r => r.merged).length;
+      console.log(`[backfill] Complete! ${succeeded} succeeded, ${mergedCount} merged`);
     };
 
     processBatches().catch((err) => {
@@ -139,7 +164,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       status: "started",
       total: slugs.length,
-      message: `Processing ${slugs.length} logos. Check GET /api/backfill for progress.`,
+      autoMerge,
+      message: `Processing ${slugs.length} logos${autoMerge ? ' (auto-merge ON)' : ' (PRs only)'}. Check GET /api/backfill for progress.`,
     });
   } catch (err) {
     console.error("[backfill] Error:", err);
@@ -156,15 +182,18 @@ export async function GET() {
   const success = activeBackfill.results.filter((r) => r.status === "success").length;
   const failed = activeBackfill.results.filter((r) => r.status === "failed").length;
   const skipped = activeBackfill.results.filter((r) => r.status === "skipped").length;
+  const merged = activeBackfill.results.filter((r) => r.merged).length;
   const done = activeBackfill.processed >= activeBackfill.total;
 
   return NextResponse.json({
     status: done ? "complete" : "processing",
     total: activeBackfill.total,
     processed: activeBackfill.processed,
+    autoMerge: activeBackfill.autoMerge,
     success,
     failed,
     skipped,
+    merged,
     results: activeBackfill.results,
   });
 }
