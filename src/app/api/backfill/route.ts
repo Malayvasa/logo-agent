@@ -29,12 +29,22 @@ async function getWebsiteUrl(slug: string): Promise<string | null> {
     const res = await fetch(`https://backend.composio.dev/api/v3/toolkits/${lookupSlug}`, {
       headers: { "x-api-key": COMPOSIO_API_KEY },
     });
-    if (!res.ok) return null;
+    if (!res.ok) return guessWebsiteUrl(slug);
     const data = await res.json();
-    return data?.meta?.app_url || null;
+    return data?.meta?.app_url || guessWebsiteUrl(slug);
   } catch {
-    return null;
+    return guessWebsiteUrl(slug);
   }
+}
+
+function guessWebsiteUrl(slug: string): string {
+  // Strip common suffixes and clean up the slug to guess a domain
+  const clean = slug
+    .replace(/_mcp$/, "")
+    .replace(/_oauth$/, "")
+    .replace(/_api$/, "")
+    .replace(/_/g, "");
+  return `https://${clean}.com`;
 }
 
 async function processOne(slug: string, autoMerge: boolean): Promise<BackfillResult> {
