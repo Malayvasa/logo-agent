@@ -5,6 +5,10 @@ import { normalizeSvg } from "@/lib/normalize-svg";
 import { commitAndCreatePR, mergePRForSlug } from "@/lib/github";
 
 const COMPOSIO_API_KEY = process.env.COMPOSIO_API_KEY;
+const LINEAR_CONNECTED_ACCOUNT = process.env.LINEAR_CONNECTED_ACCOUNT_ID || "1063cb72-2963-4af8-adf1-1cdfde2637b2";
+const DESIGN_TEAM_ID = "48c4ab35-8398-408d-967b-881b13d7ca57";
+const LOGOS_PROJECT_ID = "ceb6c22a-2b56-477e-b705-92c7a2ae8f2e";
+const IN_REVIEW_STATE_ID = "db21e0d5-b9b1-4861-ace9-7f2d2ebd85bb";
 
 // Track active backfill to prevent duplicates
 let activeBackfill: {
@@ -115,6 +119,62 @@ async function searchForWebsite(slug: string): Promise<string | null> {
   }
 }
 
+async function createLinearIssueForReview(slug: string, prUrl: string, websiteUrl: string): Promise<void> {
+  if (!COMPOSIO_API_KEY) return;
+
+  const svgPreviewUrl = `https://raw.githubusercontent.com/ComposioHQ/logo-cdn/refs/heads/logo/${slug}/src/assets/${slug}.svg`;
+
+  const description = [
+    `#### Slug :`,
+    `${slug}`,
+    ``,
+    `#### Website :`,
+    `[${websiteUrl}](<${websiteUrl}>)`,
+    ``,
+    `#### Preview :`,
+    `![${slug} logo](${svgPreviewUrl})`,
+    ``,
+    `#### PR :`,
+    `[${prUrl}](<${prUrl}>)`,
+    ``,
+    `---`,
+    `*Created by @devos-malay ⚡ via backfill*`,
+  ].join("\n");
+
+  const res = await fetch(
+    "https://backend.composio.dev/api/v2/actions/LINEAR_CREATE_LINEAR_ISSUE/execute",
+    {
+      method: "POST",
+      headers: {
+        "x-api-key": COMPOSIO_API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        connectedAccountId: LINEAR_CONNECTED_ACCOUNT,
+        input: {
+          title: `[${slug}] Add logo`,
+          description,
+          team_id: DESIGN_TEAM_ID,
+          project_id: LOGOS_PROJECT_ID,
+          state_id: IN_REVIEW_STATE_ID,
+        },
+      }),
+    }
+  );
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Linear API returned ${res.status}: ${text}`);
+  }
+
+  const data = await res.json();
+  if (!data.successful && !data.successfull) {
+    throw new Error(data.error || "Unknown error creating Linear issue");
+  }
+}
+
+let createLinearIssues = false;
+
 async function processOne(slug: string, autoMerge: boolean, websiteUrlOverride?: string): Promise<BackfillResult> {
   console.log(`[backfill] Processing: ${slug}`);
 
@@ -174,6 +234,16 @@ async function processOne(slug: string, autoMerge: boolean, websiteUrlOverride?:
       }
     }
 
+    // Step 7: Create Linear issue in "In Review" state with preview
+    if (!autoMerge && createLinearIssues) {
+      try {
+        await createLinearIssueForReview(slug, prUrl, websiteUrl);
+        console.log(`[backfill] Linear issue created for ${slug}`);
+      } catch (err) {
+        console.error(`[backfill] Failed to create Linear issue for ${slug}:`, err);
+      }
+    }
+
     return { slug, status: "success", prUrl, merged };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -188,11 +258,13 @@ async function processOne(slug: string, autoMerge: boolean, websiteUrlOverride?:
 //   slugs: string[]          — list of slugs to process (required)
 //   urlOverrides?: Record<string, string> — slug→websiteUrl overrides
 //   autoMerge?: boolean      — auto-merge PRs after creation (default: false)
+//   createIssues?: boolean   — create Linear issues in "In Review" (default: false)
 //   batchSize?: number       — how many to process per batch (default: 5)
 //
 export async function POST(request: NextRequest) {
   try {
-    const { slugs, urlOverrides = {}, autoMerge = false, batchSize = 5 } = await request.json();
+    const { slugs, urlOverrides = {}, autoMerge = false, createIssues = false, batchSize = 5 } = await request.json();
+    createLinearIssues = createIssues;
 
     if (!Array.isArray(slugs) || slugs.length === 0) {
       return NextResponse.json({ error: "slugs must be a non-empty array" }, { status: 400 });
