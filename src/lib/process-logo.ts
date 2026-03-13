@@ -102,6 +102,24 @@ export async function processLogo(request: LogoRequest): Promise<string> {
     for (const candidate of candidates) {
       try {
         console.log(`[process-logo] Trying candidate: ${candidate}`);
+
+        // If the candidate URL points to an SVG, fetch it directly instead of vectorizing
+        if (candidate.toLowerCase().endsWith(".svg")) {
+          console.log(`[process-logo] Candidate is SVG, fetching directly (skipping vectorizer)`);
+          const response = await fetch(candidate);
+          if (!response.ok) {
+            throw new ImageFetchError(`Failed to fetch SVG: ${response.status}`);
+          }
+          const svgContent = await response.text();
+          if (svgContent.includes("<svg") && svgContent.includes("</svg>")) {
+            rawSvg = svgContent;
+            console.log(`[process-logo] Direct SVG fetched (${rawSvg.length} chars)`);
+            break;
+          } else {
+            console.log(`[process-logo] URL ended in .svg but content is not valid SVG, falling back to vectorizer`);
+          }
+        }
+
         const result = await vectorize(candidate);
         rawSvg = result.svgContent;
         console.log(`[process-logo] Vectorized SVG received (${rawSvg.length} chars)`);
@@ -143,11 +161,12 @@ export async function processLogo(request: LogoRequest): Promise<string> {
 
     // Step 6: Update comment with success + preview
     console.log(`[process-logo] Step 6: Updating Linear issue`);
-    const svgPreviewUrl = `https://raw.githubusercontent.com/ComposioHQ/logo-cdn/master/src/assets/${slug}.svg?v=${Date.now()}`;
+    // Inline the SVG as a data URI so the preview is always fresh — no CDN caching issues
+    const svgDataUri = `data:image/svg+xml;base64,${Buffer.from(normalizedSvg).toString("base64")}`;
     if (commentId) {
       await updateComment(
         commentId,
-        `**Logo Agent** — done ✅\n\n**Merged:** ${prUrl}\n\n![${slug} logo](${svgPreviewUrl})`
+        `**Logo Agent** — done ✅\n\n**Merged:** ${prUrl}\n\n![${slug} logo](${svgDataUri})`
       );
     }
 
