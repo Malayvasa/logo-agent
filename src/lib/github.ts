@@ -3,7 +3,7 @@ import { executeTool } from "./composio";
 const REPO_OWNER = "ComposioHQ";
 const REPO_NAME = "logo-cdn";
 const BASE_BRANCH = "master";
-const GITHUB_CONNECTED_ACCOUNT = "ca__R-5hPXL6NFQ";
+const GITHUB_CONNECTED_ACCOUNT = "ca_WTKgBWdCdU0P";
 
 interface PrResult {
   prUrl: string;

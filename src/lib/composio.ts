@@ -25,9 +25,7 @@ export async function executeTool(
 ): Promise<{ data: any }> {
   const composio = getComposio();
   const result = await composio.tools.execute(slug, {
-    userId: connectedAccountId
-      ? "pg-test-ac8a98fe-69d3-42c3-aa8d-866e52e6ab0d"
-      : "default",
+    userId: "agent-sso-update",
     ...(connectedAccountId ? { connectedAccountId } : {}),
     arguments: args,
     dangerouslySkipVersionCheck: true,
