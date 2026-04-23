@@ -161,12 +161,13 @@ export async function processLogo(request: LogoRequest): Promise<string> {
 
     // Step 6: Update comment with success + preview
     console.log(`[process-logo] Step 6: Updating Linear issue`);
-    // Inline the SVG as a data URI so the preview is always fresh — no CDN caching issues
-    const svgDataUri = `data:image/svg+xml;base64,${Buffer.from(normalizedSvg).toString("base64")}`;
+    // Linear doesn't render data: URIs (they show as literal text), so use a
+    // master-branch raw URL with a cache-bust to keep previews fresh.
+    const svgPreviewUrl = `https://raw.githubusercontent.com/ComposioHQ/logo-cdn/master/src/assets/${slug}.svg?v=${Date.now()}`;
     if (commentId) {
       await updateComment(
         commentId,
-        `**Logo Agent** — done ✅\n\n**Merged:** ${prUrl}\n\n![${slug} logo](${svgDataUri})`
+        `**Logo Agent** — done ✅\n\n**Merged:** ${prUrl}\n\n![${slug} logo](${svgPreviewUrl})`
       );
     }
 
