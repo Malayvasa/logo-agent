@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { executeTool, getLinearConnectedAccount } from "@/lib/composio";
+import { executeLinearTool } from "@/lib/composio";
 import { processLogo } from "@/lib/process-logo";
 import type { LogoRequest } from "@/types";
 const LOGOS_PROJECT_ID = "ceb6c22a-2b56-477e-b705-92c7a2ae8f2e";
@@ -61,10 +61,10 @@ export async function POST() {
   try {
     // Fetch all issues in Logos project
     console.log("[batch] Fetching Logos project issues...");
-    const result = await executeTool("LINEAR_LIST_LINEAR_ISSUES", {
+    const result = await executeLinearTool("LINEAR_LIST_LINEAR_ISSUES", {
       project_id: LOGOS_PROJECT_ID,
       first: 250,
-    }, getLinearConnectedAccount());
+    });
 
     const issues = result.data?.issues || [];
     const triageIssues = issues.filter(

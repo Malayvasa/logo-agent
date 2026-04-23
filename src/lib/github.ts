@@ -19,7 +19,9 @@ export async function commitAndCreatePR(
   const filePath = `src/assets/${slug}.svg`;
   const commitMessage = `feat: add ${slug} logo`;
   const prTitle = `Add ${slug} logo`;
-  const rawSvgUrl = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${branchName}/${filePath}?v=${Date.now()}`;
+  // Use master URL so the preview keeps working post-merge (the branch gets
+  // deleted by mergePRForSlug). Cache-bust so force-pushes refresh the preview.
+  const rawSvgUrl = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${BASE_BRANCH}/${filePath}?v=${Date.now()}`;
   const prBody = [
     `Adds the ${slug} logo SVG to the asset library.`,
     ``,

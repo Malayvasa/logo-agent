@@ -3,15 +3,15 @@ import { fetchFavicon } from "./fetch-favicon";
 import { vectorize, ImageFetchError } from "./vectorize";
 import { normalizeSvg } from "./normalize-svg";
 import { commitAndCreatePR, mergePRForSlug } from "./github";
-import { executeTool, getLinearConnectedAccount } from "./composio";
+import { executeLinearTool } from "./composio";
 const IN_REVIEW_STATE_ID = "db21e0d5-b9b1-4861-ace9-7f2d2ebd85bb";
 
 async function createComment(issueId: string, body: string): Promise<string | null> {
   try {
-    const result = await executeTool("LINEAR_CREATE_LINEAR_COMMENT", {
+    const result = await executeLinearTool("LINEAR_CREATE_LINEAR_COMMENT", {
       issue_id: issueId,
       body,
-    }, getLinearConnectedAccount());
+    });
     return result.data?.comment?.id || result.data?.id || null;
   } catch (err) {
     console.error(`[process-logo] Failed to create comment:`, err);
@@ -21,10 +21,10 @@ async function createComment(issueId: string, body: string): Promise<string | nu
 
 async function updateComment(commentId: string, body: string): Promise<void> {
   try {
-    await executeTool("LINEAR_UPDATE_LINEAR_COMMENT", {
+    await executeLinearTool("LINEAR_UPDATE_LINEAR_COMMENT", {
       comment_id: commentId,
       body,
-    }, getLinearConnectedAccount());
+    });
   } catch (err) {
     console.error(`[process-logo] Failed to update comment:`, err);
   }
@@ -32,9 +32,9 @@ async function updateComment(commentId: string, body: string): Promise<void> {
 
 async function deleteOldAgentComments(issueId: string): Promise<void> {
   try {
-    const result = await executeTool("LINEAR_GET_LINEAR_ISSUE", {
+    const result = await executeLinearTool("LINEAR_GET_LINEAR_ISSUE", {
       issue_id: issueId,
-    }, getLinearConnectedAccount());
+    });
 
     const comments = result.data?.issue?.comments?.nodes
       || result.data?.comments?.nodes
@@ -48,9 +48,9 @@ async function deleteOldAgentComments(issueId: string): Promise<void> {
 
     await Promise.all(agentComments.map(async (comment: { id: string }) => {
       try {
-        await executeTool("LINEAR_RUN_QUERY_OR_MUTATION", {
+        await executeLinearTool("LINEAR_RUN_QUERY_OR_MUTATION", {
           query_or_mutation: `mutation { commentDelete(id: "${comment.id}") { success } }`,
-        }, getLinearConnectedAccount());
+        });
         console.log(`[process-logo] Deleted old comment: ${comment.id}`);
       } catch (err) {
         console.error(`[process-logo] Failed to delete comment ${comment.id}:`, err);
@@ -172,10 +172,10 @@ export async function processLogo(request: LogoRequest): Promise<string> {
 
     // Step 6: Move issue to "In Review"
     try {
-      await executeTool("LINEAR_UPDATE_ISSUE", {
+      await executeLinearTool("LINEAR_UPDATE_ISSUE", {
         issueId: request.issueId,
         stateId: IN_REVIEW_STATE_ID,
-      }, getLinearConnectedAccount());
+      });
       console.log(`[process-logo] Moved issue to In Review`);
     } catch (err) {
       console.error(`[process-logo] Failed to update issue state:`, err);
