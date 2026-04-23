@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getComposio, executeTool, getLinearConnectedAccount } from "@/lib/composio";
+import { getComposio, executeLinearTool } from "@/lib/composio";
 import { processLogo } from "@/lib/process-logo";
 import { handleDone } from "@/lib/handle-done";
 import type { LinearIssuePayload, LogoRequest } from "@/types";
@@ -120,10 +120,10 @@ export async function POST(request: NextRequest) {
     if (issueData.title === "[Logo Request] submission") {
       const newTitle = `[${slug}] Add logo`;
       console.log(`[webhook] Renaming issue from "${issueData.title}" to "${newTitle}"`);
-      executeTool("LINEAR_UPDATE_ISSUE", {
+      executeLinearTool("LINEAR_UPDATE_ISSUE", {
         issueId: issueData.id,
         title: newTitle,
-      }, getLinearConnectedAccount()).catch((err) => {
+      }).catch((err) => {
         console.error(`[webhook] Failed to rename issue:`, err);
       });
     }

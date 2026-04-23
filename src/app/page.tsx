@@ -3,7 +3,7 @@ export default function Home() {
     <main style={{ padding: "2rem", fontFamily: "monospace" }}>
       <h1>logo-agent</h1>
       <p>
-        Automated pipeline: Linear issue → favicon → Figma AI Vectorize → SVG →
+        Automated pipeline: Linear issue → favicon → vectorizer.ai → SVG →
         GitHub PR
       </p>
       <p>
