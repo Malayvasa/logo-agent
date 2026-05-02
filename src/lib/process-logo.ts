@@ -49,7 +49,8 @@ async function deleteOldAgentComments(issueId: string): Promise<void> {
     await Promise.all(agentComments.map(async (comment: { id: string }) => {
       try {
         await executeLinearTool("LINEAR_RUN_QUERY_OR_MUTATION", {
-          query_or_mutation: `mutation { commentDelete(id: "${comment.id}") { success } }`,
+          query_or_mutation: `mutation DeleteComment($id: String!) { commentDelete(id: $id) { success } }`,
+          variables: { id: comment.id },
         });
         console.log(`[process-logo] Deleted old comment: ${comment.id}`);
       } catch (err) {

@@ -1,6 +1,7 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { executeLinearTool } from "@/lib/composio";
 import { processLogo } from "@/lib/process-logo";
+import { requireAdmin } from "@/lib/auth";
 import type { LogoRequest } from "@/types";
 const LOGOS_PROJECT_ID = "ceb6c22a-2b56-477e-b705-92c7a2ae8f2e";
 const TRIAGE_STATE_NAME = "Triage";
@@ -51,7 +52,10 @@ function extractUrl(text: string): string | null {
 // Track running batch to prevent concurrent runs
 let batchRunning = false;
 
-export async function POST() {
+export async function POST(request: NextRequest) {
+  const denied = requireAdmin(request);
+  if (denied) return denied;
+
   if (batchRunning) {
     return NextResponse.json({ error: "Batch already running" }, { status: 409 });
   }
