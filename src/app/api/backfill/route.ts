@@ -3,6 +3,7 @@ import { fetchFavicon } from "@/lib/fetch-favicon";
 import { vectorize, ImageFetchError } from "@/lib/vectorize";
 import { normalizeSvg } from "@/lib/normalize-svg";
 import { commitAndCreatePR, mergePRForSlug } from "@/lib/github";
+import { requireAdmin } from "@/lib/auth";
 
 const COMPOSIO_API_KEY = process.env.COMPOSIO_API_KEY;
 let _linearConnectedAccount: string | null = null;
@@ -280,6 +281,9 @@ async function processOne(slug: string, autoMerge: boolean, websiteUrlOverride?:
 //   batchSize?: number       — how many to process per batch (default: 5)
 //
 export async function POST(request: NextRequest) {
+  const denied = requireAdmin(request);
+  if (denied) return denied;
+
   try {
     const { slugs, urlOverrides = {}, autoMerge = false, createIssues = false, batchSize = 5 } = await request.json();
     createLinearIssues = createIssues;
@@ -343,7 +347,10 @@ export async function POST(request: NextRequest) {
 }
 
 // GET /api/backfill — check progress
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const denied = requireAdmin(request);
+  if (denied) return denied;
+
   if (!activeBackfill) {
     return NextResponse.json({ status: "idle", message: "No backfill in progress" });
   }

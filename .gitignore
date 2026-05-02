@@ -5,3 +5,4 @@ node_modules/
 dist/
 *.tsbuildinfo
 .vercel
+admin-api-key.txt

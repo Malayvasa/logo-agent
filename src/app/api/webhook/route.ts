@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getComposio, executeLinearTool } from "@/lib/composio";
 import { processLogo } from "@/lib/process-logo";
 import { handleDone } from "@/lib/handle-done";
+import { isPublicHttpUrl } from "@/lib/auth";
 import type { LinearIssuePayload, LogoRequest } from "@/types";
 
 // Dedup: track slugs currently being processed to avoid duplicate runs from rapid webhook fires
@@ -16,25 +17,32 @@ export async function POST(request: NextRequest) {
       "webhook-signature": request.headers.get("webhook-signature") || "",
     };
 
-    // Verify webhook signature
+    // Verify webhook signature — fail closed if the secret is missing so the
+    // endpoint can never be used unauthenticated.
     const secret = process.env.COMPOSIO_WEBHOOK_SECRET;
-    if (secret) {
-      const composio = getComposio();
-      const verification = await composio.triggers.verifyWebhook({
-        id: headers["webhook-id"],
-        payload: body,
-        timestamp: headers["webhook-timestamp"],
-        signature: headers["webhook-signature"],
-        secret,
-      });
+    if (!secret) {
+      console.error("[webhook] COMPOSIO_WEBHOOK_SECRET is not set; rejecting request");
+      return NextResponse.json(
+        { error: "Webhook not configured" },
+        { status: 503 }
+      );
+    }
 
-      if (!verification.payload) {
-        console.error("[webhook] Invalid webhook signature");
-        return NextResponse.json(
-          { error: "Invalid signature" },
-          { status: 401 }
-        );
-      }
+    const composio = getComposio();
+    const verification = await composio.triggers.verifyWebhook({
+      id: headers["webhook-id"],
+      payload: body,
+      timestamp: headers["webhook-timestamp"],
+      signature: headers["webhook-signature"],
+      secret,
+    });
+
+    if (!verification.payload) {
+      console.error("[webhook] Invalid webhook signature");
+      return NextResponse.json(
+        { error: "Invalid signature" },
+        { status: 401 }
+      );
     }
 
     const payload = JSON.parse(body);
@@ -182,6 +190,15 @@ async function handleCommentEvent(commentData: any): Promise<NextResponse> {
 
   const imageUrl = imageMatch[0];
   console.log(`[webhook] Comment contains image URL: ${imageUrl}`);
+
+  // SSRF guard — the comment body is attacker-controllable (anyone with comment
+  // access in Linear). Refuse private/loopback/link-local destinations.
+  if (!isPublicHttpUrl(imageUrl)) {
+    console.warn(`[webhook] Refusing non-public image URL: ${imageUrl}`);
+    return NextResponse.json(
+      { status: "skipped", reason: "image URL is not a public http(s) target" }
+    );
+  }
 
   // We need issue details — the comment payload may have partial issue data
   const issueId = issue?.id;
