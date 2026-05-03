@@ -16,4 +16,12 @@ export interface LogoRequest {
   slug: string;
   websiteUrl: string;
   imageUrl?: string;
+  // Hint that imageUrl points to an SVG even when the URL itself has no
+  // .svg extension (e.g. Linear file-drop attachments at uploads.linear.app
+  // store SVGs without extensions in the URL — only the markdown alt text
+  // reveals the file type). When true, skip the vectorizer.
+  imageUrlIsSvg?: boolean;
+  // Raw SVG markup pasted into a Linear comment. Takes precedence over
+  // imageUrl and skips favicon discovery + vectorization entirely.
+  svgContent?: string;
 }
