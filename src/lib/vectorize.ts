@@ -1,4 +1,5 @@
 import sharp from "sharp";
+import { fetchWithLinearAuth } from "./linear-fetch";
 
 export class ImageFetchError extends Error {
   constructor(message: string) {
@@ -28,8 +29,9 @@ export async function vectorize(
 
   console.log(`[vectorize] Fetching image: ${faviconImageUrl}`);
 
-  // Download the image
-  const imageResponse = await fetch(faviconImageUrl);
+  // Download the image (uploads.linear.app needs the Linear API key — Linear
+  // gates its CDN behind the same auth as the GraphQL API)
+  const imageResponse = await fetchWithLinearAuth(faviconImageUrl);
   if (!imageResponse.ok) {
     throw new ImageFetchError(
       `Failed to fetch image (${imageResponse.status}): ${faviconImageUrl}`

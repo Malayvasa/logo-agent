@@ -4,6 +4,7 @@ import { vectorize, ImageFetchError } from "./vectorize";
 import { normalizeSvg } from "./normalize-svg";
 import { commitAndCreatePR, mergePRForSlug } from "./github";
 import { executeLinearTool } from "./composio";
+import { fetchWithLinearAuth } from "./linear-fetch";
 const IN_REVIEW_STATE_ID = "db21e0d5-b9b1-4861-ace9-7f2d2ebd85bb";
 
 async function createComment(issueId: string, body: string): Promise<string | null> {
@@ -129,7 +130,7 @@ export async function processLogo(request: LogoRequest): Promise<string> {
         }
         if (isSvgUrl) {
           console.log(`[process-logo] Candidate is SVG, fetching directly (skipping vectorizer)`);
-          const response = await fetch(candidate);
+          const response = await fetchWithLinearAuth(candidate);
           if (!response.ok) {
             throw new ImageFetchError(`Failed to fetch SVG: ${response.status}`);
           }
