@@ -73,12 +73,23 @@ export async function processLogo(request: LogoRequest): Promise<string> {
   await deleteOldAgentComments(request.issueId);
 
   // Create initial status comment
-  const commentId = await createComment(
-    request.issueId,
-    `**Logo Agent** processing **${slug}**\n\n⏳ Fetching favicon from ${websiteUrl}...`
-  );
+  const initialStatus = request.svgContent
+    ? `**Logo Agent** processing **${slug}**\n\n✅ Using SVG you provided (${request.svgContent.length} chars)\n⏳ Creating PR...`
+    : `**Logo Agent** processing **${slug}**\n\n⏳ Fetching favicon from ${websiteUrl}...`;
+  const commentId = await createComment(request.issueId, initialStatus);
 
   try {
+    let rawSvg: string | null = null;
+
+    // Fast path: user pasted SVG markup in a Linear comment. Trust it as-is —
+    // skip favicon discovery and the vectorizer, and go straight to normalize.
+    if (request.svgContent) {
+      console.log(`[process-logo] Using inline SVG from comment (${request.svgContent.length} chars)`);
+      if (!request.svgContent.includes("<svg") || !request.svgContent.includes("</svg>")) {
+        throw new Error("Provided content does not look like SVG markup");
+      }
+      rawSvg = request.svgContent;
+    } else {
     // Step 1: Fetch favicon candidates
     let candidates: string[];
     if (request.imageUrl) {
@@ -97,15 +108,26 @@ export async function processLogo(request: LogoRequest): Promise<string> {
 
     // Step 2: Try each candidate until one vectorizes successfully
     console.log(`[process-logo] Step 2: Vectorizing`);
-    let rawSvg: string | null = null;
     let lastError: Error | null = null;
 
     for (const candidate of candidates) {
       try {
         console.log(`[process-logo] Trying candidate: ${candidate}`);
 
-        // If the candidate URL points to an SVG, fetch it directly instead of vectorizing
-        if (candidate.toLowerCase().endsWith(".svg")) {
+        // If the candidate is known/inferred to be an SVG, fetch it directly
+        // and skip the vectorizer. Three signals:
+        //   - pathname ends in .svg (handles ".svg?query=string" too)
+        //   - explicit hint from the caller (Linear file-drop attachments
+        //     don't have the extension on the URL — only in the alt text)
+        let isSvgUrl = request.imageUrlIsSvg === true && candidate === request.imageUrl;
+        if (!isSvgUrl) {
+          try {
+            isSvgUrl = new URL(candidate).pathname.toLowerCase().endsWith(".svg");
+          } catch {
+            isSvgUrl = candidate.toLowerCase().endsWith(".svg");
+          }
+        }
+        if (isSvgUrl) {
           console.log(`[process-logo] Candidate is SVG, fetching directly (skipping vectorizer)`);
           const response = await fetch(candidate);
           if (!response.ok) {
@@ -142,6 +164,7 @@ export async function processLogo(request: LogoRequest): Promise<string> {
     if (commentId) {
       await updateComment(commentId, `**Logo Agent** processing **${slug}**\n\n✅ Favicon fetched\n✅ Vectorized to SVG\n⏳ Creating PR...`);
     }
+    } // end favicon-discovery branch
 
     // Step 3: Normalize SVG to 128x128
     console.log(`[process-logo] Step 3: Normalizing SVG`);

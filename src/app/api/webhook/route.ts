@@ -170,6 +170,84 @@ export async function POST(request: NextRequest) {
 }
 
 const IMAGE_URL_REGEX = /https?:\/\/[^\s<>"{}|\\^`\[\]]+\.(?:png|jpg|jpeg|webp|svg|ico)(?:\?[^\s]*)?/i;
+const INLINE_SVG_REGEX = /<svg\b[\s\S]*?<\/svg>/i;
+// Linear inserts file-drop attachments as ![filename.ext](url). The URL
+// (uploads.linear.app/<id>/<id>/<id>) has NO extension — the file type is
+// only knowable from the alt text.
+const LINEAR_ATTACHMENT_REGEX = /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/;
+// Plain markdown link: [text](<url>) or [text](url). Used to strip the
+// "<...>)" wrapping that Linear adds around bare URLs in comments.
+const MARKDOWN_LINK_REGEX = /\[[^\]]*\]\(<?([^>)\s]+)>?\)/g;
+
+interface ExtractedImage {
+  url: string;
+  isSvg: boolean;
+  source: "linear-attachment" | "markdown-link" | "bare-url";
+}
+
+// Pull an image reference out of a Linear comment body, handling Linear's
+// three observed shapes: file-drop attachments, plain markdown links, and
+// bare URLs. Returns isSvg when we can prove it from alt text or pathname.
+function extractCommentImage(body: string): ExtractedImage | null {
+  // Form 1: Linear file-drop attachment — ![filename.ext](https://uploads.linear.app/...)
+  const attachmentMatch = body.match(LINEAR_ATTACHMENT_REGEX);
+  if (attachmentMatch) {
+    // Linear escapes underscores in alt text (\_), strip those before checking
+    const alt = attachmentMatch[1].replace(/\\_/g, "_");
+    const url = attachmentMatch[2];
+    if (/\.svg(\b|$)/i.test(alt)) {
+      return { url, isSvg: true, source: "linear-attachment" };
+    }
+    if (/\.(png|jpe?g|webp|ico)(\b|$)/i.test(alt)) {
+      return { url, isSvg: false, source: "linear-attachment" };
+    }
+    // Attachment with unknown extension — let it through as a raster, the
+    // vectorizer's sharp pass will reject it cleanly if it isn't an image.
+    return { url, isSvg: false, source: "linear-attachment" };
+  }
+
+  // Form 2: bare URL in the body (possibly wrapped as [url](<url>) by Linear)
+  // — strip wrappers first so trailing ">)" doesn't leak into the captured URL.
+  const cleaned = body.replace(MARKDOWN_LINK_REGEX, "$1 ");
+  const urlMatch = cleaned.match(IMAGE_URL_REGEX);
+  if (urlMatch) {
+    const url = urlMatch[0];
+    let isSvg = false;
+    try {
+      isSvg = new URL(url).pathname.toLowerCase().endsWith(".svg");
+    } catch {
+      isSvg = url.toLowerCase().includes(".svg");
+    }
+    return {
+      url,
+      isSvg,
+      source: cleaned === body ? "bare-url" : "markdown-link",
+    };
+  }
+
+  return null;
+}
+
+// Linear renders pastes through markdown — inline HTML can come through
+// either as raw <svg>...</svg> or as HTML-entity-escaped (&lt;svg&gt;...).
+// Try the raw form first; fall back to a decoded copy of the body.
+function extractInlineSvg(body: string): string | null {
+  const direct = body.match(INLINE_SVG_REGEX);
+  if (direct) return direct[0];
+
+  if (body.includes("&lt;svg")) {
+    const decoded = body
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&amp;/g, "&");
+    const match = decoded.match(INLINE_SVG_REGEX);
+    if (match) return match[0];
+  }
+
+  return null;
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function handleCommentEvent(commentData: any): Promise<NextResponse> {
@@ -181,23 +259,32 @@ async function handleCommentEvent(commentData: any): Promise<NextResponse> {
     return NextResponse.json({ status: "skipped", reason: "agent comment" });
   }
 
-  // Check if the comment contains an image URL
-  const imageMatch = body.match(IMAGE_URL_REGEX);
-  if (!imageMatch) {
-    console.log("[webhook] Comment has no image URL, skipping");
-    return NextResponse.json({ status: "skipped", reason: "no image URL in comment" });
-  }
+  // Inline SVG takes precedence over image URLs — if the user pasted SVG
+  // markup directly, we trust it and skip discovery + vectorization.
+  const inlineSvg = extractInlineSvg(body);
+  let extracted: ExtractedImage | null = null;
 
-  const imageUrl = imageMatch[0];
-  console.log(`[webhook] Comment contains image URL: ${imageUrl}`);
+  if (!inlineSvg) {
+    extracted = extractCommentImage(body);
+    if (!extracted) {
+      console.log("[webhook] Comment has no inline SVG, attachment, or image URL, skipping");
+      return NextResponse.json({ status: "skipped", reason: "no SVG or image URL in comment" });
+    }
 
-  // SSRF guard — the comment body is attacker-controllable (anyone with comment
-  // access in Linear). Refuse private/loopback/link-local destinations.
-  if (!isPublicHttpUrl(imageUrl)) {
-    console.warn(`[webhook] Refusing non-public image URL: ${imageUrl}`);
-    return NextResponse.json(
-      { status: "skipped", reason: "image URL is not a public http(s) target" }
+    console.log(
+      `[webhook] Comment contains image (${extracted.source}, isSvg=${extracted.isSvg}): ${extracted.url}`
     );
+
+    // SSRF guard — the comment body is attacker-controllable (anyone with comment
+    // access in Linear). Refuse private/loopback/link-local destinations.
+    if (!isPublicHttpUrl(extracted.url)) {
+      console.warn(`[webhook] Refusing non-public image URL: ${extracted.url}`);
+      return NextResponse.json(
+        { status: "skipped", reason: "image URL is not a public http(s) target" }
+      );
+    }
+  } else {
+    console.log(`[webhook] Comment contains inline SVG (${inlineSvg.length} chars)`);
   }
 
   // We need issue details — the comment payload may have partial issue data
@@ -220,21 +307,31 @@ async function handleCommentEvent(commentData: any): Promise<NextResponse> {
   const slug = deriveSlug(issueTitle, issueDescription);
   const websiteUrl = extractUrl(issueDescription || "") || "https://unknown";
 
-  console.log(`[webhook] Comment-triggered rerun for ${slug} with image: ${imageUrl}`);
+  console.log(
+    `[webhook] Comment-triggered rerun for ${slug} (${
+      inlineSvg ? "inline SVG" : `${extracted!.source}, isSvg=${extracted!.isSvg}`
+    })`
+  );
 
   const logoRequest: LogoRequest = {
     issueId,
     issueIdentifier: issueIdentifier || slug,
     slug,
     websiteUrl,
-    imageUrl,
+    ...(inlineSvg
+      ? { svgContent: inlineSvg }
+      : { imageUrl: extracted!.url, imageUrlIsSvg: extracted!.isSvg }),
   };
 
   processLogo(logoRequest).catch((err) => {
     console.error(`[webhook] processLogo (comment) failed for ${slug}:`, err);
   });
 
-  return NextResponse.json({ status: "processing", slug, imageUrl });
+  return NextResponse.json({
+    status: "processing",
+    slug,
+    source: inlineSvg ? "inline-svg" : extracted!.source,
+  });
 }
 
 function isRepoUrl(url: string): boolean {
