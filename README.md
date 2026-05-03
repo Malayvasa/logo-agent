@@ -44,7 +44,11 @@ Concretely, the agent:
 - **Normalizes every logo** to a 128×128 viewBox so the entire CDN is uniform.
 - **Opens a PR with a live preview** — the description includes a `raw.githubusercontent.com` image URL pinned to `master` so it keeps working after the branch is deleted.
 - **Auto-merges** via squash merge, deletes the branch, and posts the merged URL back into the Linear ticket.
-- **Handles reruns** — if a designer comments `@logo-agent rerun <imageUrl>` on a ticket, the agent re-vectorizes from the supplied image and force-pushes a new commit to the existing PR.
+- **Handles reruns from a comment.** If the agent picked the wrong asset, the designer drops a replacement into a comment and the agent re-runs against that. Four input shapes are supported, in priority order:
+  1. **Raw `<svg>...</svg>` markup pasted into the comment body.** Used as-is. No fetch, no vectorizer.
+  2. **Linear file-drop attachment** (drag-and-drop a `.svg` / `.png` / `.jpg` / `.webp` / `.ico` into the comment box). The agent reads the filename from the markdown alt text, fetches the upload from `uploads.linear.app` with the Linear API key, and routes SVGs straight to PR / rasters to the vectorizer.
+  3. **Public image URL** ending in a supported extension. Same routing: SVG → direct fetch, raster → vectorizer. Query strings are tolerated.
+  4. **Markdown-wrapped URL** (`[label](<url>)`). The wrapper is stripped before extraction.
 - **Cleans up after itself** — every status comment the agent writes starts with `**Logo Agent**` so it can find and delete its own old comments on retries.
 
 ## Why this is interesting as a demo
@@ -55,7 +59,7 @@ Things worth pointing out during a demo:
 
 - **The trigger is a Linear webhook** delivered through Composio with HMAC verification. No polling, no cron.
 - **The agent is "smart" only where it needs to be** — domain discovery uses a search fallback when the toolkit catalog lacks a URL; everything else is a deterministic pipeline. Most "agent" demos overuse LLMs; this one barely uses one (the LLM-y part is the candidate-ranking heuristics).
-- **It has a comment-driven escape hatch.** When the favicon discovery picks the wrong asset, the designer just drops a better image URL in a Linear comment and the agent reruns the pipeline against that asset — no re-filing, no developer intervention.
+- **It has a comment-driven escape hatch.** When the favicon discovery picks the wrong asset, the designer drops a replacement into a Linear comment — by file, URL, or raw `<svg>` markup — and the agent reruns. The drop-a-file path needs a separate `LINEAR_API_KEY` because Linear's CDN gates uploads behind the same auth as the GraphQL API and Composio's toolkit doesn't expose a passthrough fetcher (worth a feedback note to Composio).
 - **Two Composio entities, one process.** Linear and GitHub are connected under different Composio entities (a real-world wrinkle — different SSO scopes for different orgs). The agent dispatches the right `userId` per toolkit via thin wrappers in `src/lib/composio.ts`.
 
 ## Architecture
@@ -95,7 +99,7 @@ Things worth pointing out during a demo:
 | `POST /api/batch` | Manual sweep across all Triage tickets | `Authorization: Bearer $ADMIN_API_KEY` |
 | `POST /api/backfill` | Seed N logos from a slug list, no Linear ticket required | `Authorization: Bearer $ADMIN_API_KEY` |
 
-**Pipeline modules** (all in `src/lib/`): `process-logo.ts` orchestrates, `fetch-favicon.ts` discovers candidates, `vectorize.ts` calls vectorizer.ai (with sharp pre-processing for ICO/WebP edge cases), `normalize-svg.ts` rewrites the viewBox, `github.ts` does the GitHub ops, `composio.ts` is the Composio client and per-toolkit dispatch wrappers, `auth.ts` gates the admin endpoints.
+**Pipeline modules** (all in `src/lib/`): `process-logo.ts` orchestrates, `fetch-favicon.ts` discovers candidates, `vectorize.ts` calls vectorizer.ai (with sharp pre-processing for ICO/WebP edge cases), `normalize-svg.ts` rewrites the viewBox, `github.ts` does the GitHub ops, `composio.ts` is the Composio client and per-toolkit dispatch wrappers, `linear-fetch.ts` adds the Linear API-key Authorization header for `uploads.linear.app` URLs, `auth.ts` gates the admin endpoints.
 
 ## Running it locally
 
@@ -109,6 +113,7 @@ You'll need accounts/keys for:
 
 - **Composio** — `COMPOSIO_API_KEY`, plus a Linear and a GitHub connected account (set up in the Composio dashboard). The Linear connected account ID goes in `LINEAR_CONNECTED_ACCOUNT`. The GitHub connected account ID is currently hardcoded in `src/lib/github.ts` for the ComposioHQ org.
 - **Linear** — your team ID in `LINEAR_TEAM_ID`. Find it in Linear's settings or via the API.
+- **Linear personal API key** — `LINEAR_API_KEY` (`lin_api_…`). Only needed if you want designers to be able to drag-and-drop files into Linear comments — Linear gates `uploads.linear.app` behind the same auth as its GraphQL API, and Composio's toolkit doesn't proxy CDN fetches, so we hold a key directly. A read-only personal key is sufficient. Generate at `https://linear.app/<workspace>/settings/account/security`.
 - **Vectorizer.ai** — `VECTORIZER_API_ID` + `VECTORIZER_API_SECRET`.
 - **Webhook secret** — `COMPOSIO_WEBHOOK_SECRET`. The webhook fails closed if this isn't set, so even local dev needs a value (use anything during testing).
 - **Admin token** — `ADMIN_API_KEY`. Required by `/api/batch` and `/api/backfill`. Same fail-closed behavior.
@@ -143,7 +148,7 @@ Production runs on Railway. The Railway service is **not** wired to GitHub, so m
 
 - **Favicon quality is the floor for logo quality.** If a company ships only a 16×16 ICO, vectorizer.ai's output will look like a 16×16 ICO traced into vectors. The comment-rerun path exists for exactly this case.
 - **The agent has write access to `ComposioHQ/logo-cdn` `master` and auto-merges.** Acceptable because (a) the repo is a logo asset library, not application code, and (b) all PRs are scoped to a single file under `src/assets/`. Don't repurpose this pattern for a real codebase without adding review gates.
-- **Comment-triggered reruns trust the URL the commenter supplies** (subject to public-IP-only SSRF filtering in `src/lib/auth.ts`). Anyone with comment access in the Logos Linear project can cause the server to fetch arbitrary public URLs.
+- **Comment-triggered reruns trust whatever the commenter supplies** — URL, attachment, or raw `<svg>` markup. URLs are subject to public-IP-only SSRF filtering (`src/lib/auth.ts`); anyone with comment access in the Logos Linear project can cause the server to fetch arbitrary public URLs and to commit arbitrary SVG content into the CDN. Acceptable for an internal tool with a small trusted comment audience; revisit if the project access widens.
 - **One Linear project, one GitHub repo, hardcoded.** The state IDs, project IDs, repo name, and team ID are all in code. This is intentional — it's an internal tool for one specific workflow, not a general-purpose framework.
 
 ## Repo layout
@@ -163,6 +168,7 @@ src/
     normalize-svg.ts        ← 128×128 viewBox rewrite
     github.ts               ← branch / commit / PR / merge ops
     composio.ts             ← Composio client + Linear/GitHub dispatch
+    linear-fetch.ts         ← fetch wrapper that auths uploads.linear.app
     handle-done.ts          ← merge handler when an issue moves to Done
     auth.ts                 ← admin Bearer auth + SSRF guard
   types/index.ts
