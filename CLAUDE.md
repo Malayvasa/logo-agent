@@ -1,6 +1,6 @@
 # logo-agent
 
-An automated pipeline: designer files a Linear issue with a website URL → agent fetches a favicon → vectorizes it to SVG → opens a PR on `ComposioHQ/logo-cdn` → auto-merges → updates the Linear issue with preview + PR link → moves the issue to "In Review".
+An automated pipeline: designer files a Linear issue with a website URL → agent fetches a favicon → vectorizes it to SVG → opens a PR on `ComposioHQ/logo-cdn` → posts preview + PR link on the issue → moves the issue to "In Review". A human reviews the preview and moves the issue to **Done**, which triggers the merge.
 
 Production: https://logo-agent-production.up.railway.app
 
@@ -12,8 +12,8 @@ Production: https://logo-agent-production.up.railway.app
 - `src/app/api/backfill/route.ts` — batch endpoint that takes an explicit list of slugs and runs the full pipeline over them (for seeding logos without going through Linear). Uses Composio's v2 REST API directly for Linear issue creation (see "Two ways to call Composio" below).
 
 **Pipeline:**
-- `src/lib/process-logo.ts` — main agent flow. Creates a status comment, fetches favicon, vectorizes, normalizes SVG, opens PR, merges, updates comment with preview, moves issue to "In Review".
-- `src/lib/handle-done.ts` — called when an issue moves to Done. Merges the open PR for that slug.
+- `src/lib/process-logo.ts` — main agent flow. Creates a status comment, fetches favicon, vectorizes, normalizes SVG, opens PR, posts the preview + PR link, moves issue to "In Review". Does NOT merge — that happens on the Done transition.
+- `src/lib/handle-done.ts` — called when an issue moves to Done. Merges the open PR for that slug. This is the gating step: a human must approve by moving the issue to Done before anything lands on master.
 - `src/lib/fetch-favicon.ts` — discovers favicon candidates from a site (favicon.ico, apple-touch-icon, meta tags).
 - `src/lib/vectorize.ts` — raster → SVG via vectorizer.ai. SVG candidates skip this step (see `process-logo.ts`).
 - `src/lib/normalize-svg.ts` — resizes/centers the SVG to a 128×128 viewBox.
@@ -56,9 +56,11 @@ If you're adding a new Linear call, use `executeLinearTool`. Don't reach for the
 ## GitHub-specific rules
 
 - **PR branch naming:** `logo/<slug>`. Branches are deleted after merge (see `mergePRForSlug`).
-- **PR preview image URL:** use the `master` branch URL, NOT the `logo/<slug>` branch URL. Branches are deleted post-merge, so a branch-scoped URL 404s once the PR is merged. `github.ts` already does this correctly — keep it that way.
+- **PR preview image URL:**
+  - **In the PR body** (`github.ts`) — use the `master` branch URL. Branches get deleted on merge, so a branch URL 404s post-merge.
+  - **In the Linear "ready for review" comment** (`process-logo.ts`) — use the `logo/<slug>` branch URL. The file isn't on master yet (the PR is still open), and the branch is guaranteed to exist until `handleDone` merges and deletes it.
 - **Merge strategy:** squash merges.
-- **Auto-merge:** happy-path auto-merges. The window between open and merge is seconds in practice.
+- **Merge gating:** PRs are NOT auto-merged. They stay open until a human moves the Linear issue to **Done**, which fires the webhook → `handleDone` → merge. This is the human-approval step.
 
 ## Environment variables
 

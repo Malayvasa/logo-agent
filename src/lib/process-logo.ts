@@ -2,7 +2,7 @@ import type { LogoRequest } from "@/types";
 import { fetchFavicon } from "./fetch-favicon";
 import { vectorize, ImageFetchError } from "./vectorize";
 import { normalizeSvg } from "./normalize-svg";
-import { commitAndCreatePR, mergePRForSlug } from "./github";
+import { commitAndCreatePR } from "./github";
 import { executeLinearTool } from "./composio";
 import { fetchWithLinearAuth } from "./linear-fetch";
 const IN_REVIEW_STATE_ID = "db21e0d5-b9b1-4861-ace9-7f2d2ebd85bb";
@@ -179,20 +179,16 @@ export async function processLogo(request: LogoRequest): Promise<string> {
       issueIdentifier
     );
 
-    // Step 5: Merge the PR
-    console.log(`[process-logo] Step 5: Merging PR`);
-    await mergePRForSlug(slug);
-    console.log(`[process-logo] PR merged`);
-
-    // Step 6: Update comment with success + preview
-    console.log(`[process-logo] Step 6: Updating Linear issue`);
-    // Linear doesn't render data: URIs (they show as literal text), so use a
-    // master-branch raw URL with a cache-bust to keep previews fresh.
-    const svgPreviewUrl = `https://raw.githubusercontent.com/ComposioHQ/logo-cdn/master/src/assets/${slug}.svg?v=${Date.now()}`;
+    // Step 5: Update comment with preview + open PR link.
+    // PR is left open intentionally — merge happens when the issue moves to
+    // "Done" (see handleDone). Pre-merge the file isn't on master yet, so
+    // point the preview at the branch (it exists until handleDone deletes it).
+    console.log(`[process-logo] Step 5: Updating Linear issue`);
+    const svgPreviewUrl = `https://raw.githubusercontent.com/ComposioHQ/logo-cdn/logo/${slug}/src/assets/${slug}.svg?v=${Date.now()}`;
     if (commentId) {
       await updateComment(
         commentId,
-        `**Logo Agent** — done ✅\n\n**Merged:** ${prUrl}\n\n![${slug} logo](${svgPreviewUrl})`
+        `**Logo Agent** — ready for review 👀\n\n**PR:** ${prUrl}\n\n![${slug} logo](${svgPreviewUrl})\n\nMove this issue to **Done** to merge.`
       );
     }
 
@@ -207,7 +203,7 @@ export async function processLogo(request: LogoRequest): Promise<string> {
       console.error(`[process-logo] Failed to update issue state:`, err);
     }
 
-    console.log(`[process-logo] Done: ${prUrl}`);
+    console.log(`[process-logo] PR opened, awaiting Done transition: ${prUrl}`);
     return prUrl;
   } catch (err) {
     // Update comment with error
