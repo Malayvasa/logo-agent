@@ -6,6 +6,7 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
+    "setup": "npx tsx scripts/setup.ts",
     "setup-trigger": "npx tsx scripts/setup-trigger.ts"
   },
   "dependencies": {
