@@ -1,10 +1,7 @@
 import { Composio } from "@composio/core";
+import { githubUserId, linearUserId } from "./config";
 
 let _client: InstanceType<typeof Composio> | null = null;
-
-// Composio entity that owns the Linear connected account. GitHub uses a
-// different entity ("agent-sso-update"), so we can't share one global userId.
-const LINEAR_USER_ID = "pg-test-ac8a98fe-69d3-42c3-aa8d-866e52e6ab0d";
 
 export function getComposio() {
   if (!_client) {
@@ -26,7 +23,7 @@ export async function executeTool(
   slug: string,
   args: Record<string, unknown>,
   connectedAccountId?: string,
-  userId: string = "agent-sso-update"
+  userId: string = githubUserId()
 ): Promise<{ data: any }> {
   const composio = getComposio();
   const result = await composio.tools.execute(slug, {
@@ -43,5 +40,5 @@ export async function executeLinearTool(
   slug: string,
   args: Record<string, unknown>
 ): Promise<{ data: any }> {
-  return executeTool(slug, args, getLinearConnectedAccount(), LINEAR_USER_ID);
+  return executeTool(slug, args, getLinearConnectedAccount(), linearUserId());
 }

@@ -2,9 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { executeLinearTool } from "@/lib/composio";
 import { processLogo } from "@/lib/process-logo";
 import { requireAdmin } from "@/lib/auth";
+import { linearProjectId, linearTriageStateName, repoUrlFragment } from "@/lib/config";
 import type { LogoRequest } from "@/types";
-const LOGOS_PROJECT_ID = "ceb6c22a-2b56-477e-b705-92c7a2ae8f2e";
-const TRIAGE_STATE_NAME = "Triage";
 
 function deriveSlug(title: string, description?: string): string {
   // First, check for explicit "Slug:" in the description
@@ -33,7 +32,7 @@ function deriveSlug(title: string, description?: string): string {
 }
 
 function isRepoUrl(url: string): boolean {
-  return url.includes("github.com/ComposioHQ/logo-cdn");
+  return url.includes(repoUrlFragment());
 }
 
 function extractUrl(text: string): string | null {
@@ -66,14 +65,15 @@ export async function POST(request: NextRequest) {
     // Fetch all issues in Logos project
     console.log("[batch] Fetching Logos project issues...");
     const result = await executeLinearTool("LINEAR_LIST_LINEAR_ISSUES", {
-      project_id: LOGOS_PROJECT_ID,
+      project_id: linearProjectId(),
       first: 250,
     });
 
+    const triageStateName = linearTriageStateName();
     const issues = result.data?.issues || [];
     const triageIssues = issues.filter(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (issue: any) => issue.state?.name === TRIAGE_STATE_NAME
+      (issue: any) => issue.state?.name === triageStateName
     );
 
     console.log(`[batch] Found ${triageIssues.length} Triage issues out of ${issues.length} total`);

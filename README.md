@@ -4,7 +4,9 @@ A small autonomous agent that turns a Linear ticket into a merged logo PR.
 
 A designer files a ticket with a website URL — the agent fetches a favicon, vectorizes it, opens a PR on the logo CDN repo, merges it, and updates the ticket with a preview. End-to-end in seconds, no human in the loop.
 
-Live: <https://logo-agent-production.up.railway.app>
+Live (maintainer's deploy): <https://logo-agent-production.up.railway.app>
+
+Licensed under MIT — see [LICENSE](./LICENSE).
 
 ## The problem
 
@@ -105,36 +107,66 @@ Things worth pointing out during a demo:
 
 ```bash
 npm install
-cp .env.example .env       # then fill in the keys
+cp .env.example .env       # then fill in the keys (see below)
 npm run dev                # next dev on :3000
 ```
 
-You'll need accounts/keys for:
+### What you need before you start
 
-- **Composio** — `COMPOSIO_API_KEY`, plus a Linear and a GitHub connected account (set up in the Composio dashboard). The Linear connected account ID goes in `LINEAR_CONNECTED_ACCOUNT`. The GitHub connected account ID is currently hardcoded in `src/lib/github.ts` for the ComposioHQ org.
-- **Linear** — your team ID in `LINEAR_TEAM_ID`. Find it in Linear's settings or via the API.
-- **Linear personal API key** — `LINEAR_API_KEY` (`lin_api_…`). Only needed if you want designers to be able to drag-and-drop files into Linear comments — Linear gates `uploads.linear.app` behind the same auth as its GraphQL API, and Composio's toolkit doesn't proxy CDN fetches, so we hold a key directly. A read-only personal key is sufficient. Generate at `https://linear.app/<workspace>/settings/account/security`.
-- **Vectorizer.ai** — `VECTORIZER_API_ID` + `VECTORIZER_API_SECRET`.
-- **Webhook secret** — `COMPOSIO_WEBHOOK_SECRET`. The webhook fails closed if this isn't set, so even local dev needs a value (use anything during testing).
-- **Admin token** — `ADMIN_API_KEY`. Required by `/api/batch` and `/api/backfill`. Same fail-closed behavior.
+This is glue between four external services. None of them have a free fallback in this codebase — you'll need accounts for all four:
 
-To register the Linear webhook trigger with Composio:
+- **Composio** (free tier OK) — the integration platform that owns Linear + GitHub auth. https://composio.dev
+- **Linear** workspace with admin access (to find IDs and to give Linear's webhook a public URL).
+- **GitHub** repo you have write access to. This is the repo the agent commits logos to.
+- **Vectorizer.ai** (paid, but cheap — pay-as-you-go credits). https://vectorizer.ai/api
+
+### Step-by-step setup
+
+1. **Get a Composio API key** at https://app.composio.dev/api-keys → fill `COMPOSIO_API_KEY`.
+
+2. **Connect Linear in Composio.** In the Composio dashboard, add a Linear connection. After it goes ACTIVE, grab the `ca_…` id and the entity (userId) it was created under, and fill `LINEAR_CONNECTED_ACCOUNT` + `LINEAR_USER_ID`.
+
+3. **Connect GitHub in Composio.** Same flow as Linear. Fill `GITHUB_CONNECTED_ACCOUNT`, and `GITHUB_USER_ID` if you used a non-default entity name.
+
+4. **Point the agent at your target repo.** Set `LOGO_REPO_OWNER`, `LOGO_REPO_NAME`, and `LOGO_REPO_BRANCH` (defaults to `main`) to the repo you want PRs opened against. Logos will land at `src/assets/<slug>.svg` on each PR — adjust [`commitAndCreatePR`](src/lib/github.ts) if your repo uses a different layout.
+
+5. **Get your Linear workspace IDs.** You need three:
+   - `LINEAR_TEAM_ID` — the team that owns the logo-request project.
+   - `LINEAR_LOGOS_PROJECT_ID` — the project the agent watches. Issues outside this project are ignored.
+   - `LINEAR_IN_REVIEW_STATE_ID` — the workflow state issues should move to once the PR is open and awaiting human review.
+
+   The easiest way to grab these: open Linear's GraphQL API at https://linear.app/developers/graphql and run `query { teams { nodes { id name } } }` / `projects` / `workflowStates`. Or use the [Linear API explorer](https://studio.apollographql.com/public/Linear-API/variant/current/explorer).
+
+   Optionally set `LINEAR_PROJECT_NAME` (default `"Logos"`) and `LINEAR_TRIAGE_STATE_NAME` (default `"Triage"`) if your project/state names differ.
+
+6. **Get vectorizer.ai credentials** at https://vectorizer.ai/api → fill `VECTORIZER_API_ID` and `VECTORIZER_API_SECRET`.
+
+7. **Set the local secrets:**
+   - `COMPOSIO_WEBHOOK_SECRET` — any random string; the webhook fails closed if unset.
+   - `ADMIN_API_KEY` — any random string; required by `/api/batch` and `/api/backfill`.
+   - `LINEAR_API_KEY` *(optional)* — only needed if you want designers to drop image files into Linear comments. Linear gates `uploads.linear.app` behind the same auth as its GraphQL API, so we hold a personal key directly. Generate at `https://linear.app/<workspace>/settings/account/security`.
+
+8. **Register the webhook.** Once deployed (or with a tunnel like ngrok pointed at `localhost:3000`):
+
+   ```bash
+   npx tsx scripts/setup-trigger.ts https://your-deploy-url/api/webhook
+   ```
+
+   This registers Composio's `LINEAR_ISSUE_UPDATED_TRIGGER` against your URL with HMAC signing using `COMPOSIO_WEBHOOK_SECRET`.
+
+### Admin endpoints
+
+Sweep all `Triage`-state issues in the configured project:
 
 ```bash
-npx tsx scripts/setup-trigger.ts https://your-deploy-url/api/webhook
-```
-
-To kick off a batch run against every Triage ticket in the Logos project:
-
-```bash
-curl -X POST https://logo-agent-production.up.railway.app/api/batch \
+curl -X POST http://localhost:3000/api/batch \
   -H "Authorization: Bearer $ADMIN_API_KEY"
 ```
 
-To seed logos for a known list of slugs (no Linear tickets required):
+Seed logos for a known list of slugs without going through Linear:
 
 ```bash
-curl -X POST https://logo-agent-production.up.railway.app/api/backfill \
+curl -X POST http://localhost:3000/api/backfill \
   -H "Authorization: Bearer $ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"slugs":["stripe","linear","github"],"autoMerge":true}'
@@ -142,14 +174,16 @@ curl -X POST https://logo-agent-production.up.railway.app/api/backfill \
 
 ## Deploying
 
-Production runs on Railway. The Railway service is **not** wired to GitHub, so merging a PR doesn't redeploy automatically — you push deploys explicitly with `railway up --service logo-agent --ci` after pulling main. Full deploy runbook lives in [CLAUDE.md](./CLAUDE.md).
+Any Node-hosting platform that can run a Next.js app works (Vercel, Railway, Fly, Render). The only runtime requirement beyond the env vars above is `sharp`, which ships native binaries for Linux x64 / arm64.
+
+The repo's production deploy runs on Railway with `railway up --service logo-agent --ci` from a clean `main` checkout. See [CLAUDE.md](./CLAUDE.md) for the maintainer's full runbook — your deploy story will be different.
 
 ## Limitations & known sharp edges
 
 - **Favicon quality is the floor for logo quality.** If a company ships only a 16×16 ICO, vectorizer.ai's output will look like a 16×16 ICO traced into vectors. The comment-rerun path exists for exactly this case.
 - **The agent has write access to `ComposioHQ/logo-cdn` `master` and auto-merges.** Acceptable because (a) the repo is a logo asset library, not application code, and (b) all PRs are scoped to a single file under `src/assets/`. Don't repurpose this pattern for a real codebase without adding review gates.
 - **Comment-triggered reruns trust whatever the commenter supplies** — URL, attachment, or raw `<svg>` markup. URLs are subject to public-IP-only SSRF filtering (`src/lib/auth.ts`); anyone with comment access in the Logos Linear project can cause the server to fetch arbitrary public URLs and to commit arbitrary SVG content into the CDN. Acceptable for an internal tool with a small trusted comment audience; revisit if the project access widens.
-- **One Linear project, one GitHub repo, hardcoded.** The state IDs, project IDs, repo name, and team ID are all in code. This is intentional — it's an internal tool for one specific workflow, not a general-purpose framework.
+- **One Linear project, one GitHub repo per deploy.** The state IDs, project IDs, repo name, and team ID all come from env vars (see `.env.example`). Fork and run your own instance for each workflow.
 
 ## Repo layout
 
