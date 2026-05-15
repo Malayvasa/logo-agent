@@ -106,10 +106,15 @@ Things worth pointing out during a demo:
 ## Running it locally
 
 ```bash
+# One-time: install the Composio CLI (https://composio.dev/cli)
+curl -fsSL https://composio.dev/install | bash
+
 npm install
-cp .env.example .env       # then fill in the keys (see below)
+npm run setup              # interactive — links Composio, writes .env
 npm run dev                # next dev on :3000
 ```
+
+`npm run setup` uses the Composio CLI to log you in, open browser flows for GitHub and Linear, then introspects your Linear workspace so you can pick the right team, project, and "In Review" state without copy-pasting UUIDs by hand. It writes a fully-populated `.env`. If you'd rather configure manually, `cp .env.example .env` and read the section below.
 
 ### What you need before you start
 
@@ -122,7 +127,7 @@ This is glue between four external services. None of them have a free fallback i
 
 ### Step-by-step setup
 
-1. **Get a Composio API key** at https://app.composio.dev/api-keys → fill `COMPOSIO_API_KEY`.
+1. **Get a Composio API key** at `https://connect.composio.dev/<your-org>/<your-project>/settings/api-keys` (substitute your org + project slugs; `npm run setup` constructs the URL and opens it for you) → fill `COMPOSIO_API_KEY`.
 
 2. **Connect Linear in Composio.** In the Composio dashboard, add a Linear connection. After it goes ACTIVE, grab the `ca_…` id and the entity (userId) it was created under, and fill `LINEAR_CONNECTED_ACCOUNT` + `LINEAR_USER_ID`.
 
