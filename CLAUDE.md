@@ -24,14 +24,15 @@ Production: https://logo-agent-production.up.railway.app
 
 ## Composio setup — two entities, use the right wrapper
 
-**IMPORTANT:** This project's Composio connected accounts are split across two entities. Using the wrong userId fails every tool call with `ActionExecute_ConnectedAccountEntityIdMismatch`.
+**IMPORTANT:** Composio's userId (entity) is set per connected account. If your Linear and GitHub connections live under different entities (common with separate SSO scopes), using the wrong userId fails every tool call with `ActionExecute_ConnectedAccountEntityIdMismatch`.
 
-- **Linear** (`ca_32jlkHR7XaS-`, from `LINEAR_CONNECTED_ACCOUNT` env) → entity `pg-test-ac8a98fe-69d3-42c3-aa8d-866e52e6ab0d`
-- **GitHub** (`ca_WTKgBWdCdU0P`, hardcoded in `github.ts`) → entity `agent-sso-update`
+Configured via env:
+- **Linear** → `LINEAR_CONNECTED_ACCOUNT` + `LINEAR_USER_ID`
+- **GitHub** → `GITHUB_CONNECTED_ACCOUNT` + `GITHUB_USER_ID` (defaults to `"default"`)
 
 The wrappers in `src/lib/composio.ts` bundle the right userId:
 - **Any Linear call:** `executeLinearTool(slug, args)` — pre-binds the Linear entity
-- **Any GitHub call:** `executeTool(slug, args, connectedAccountId)` — defaults to `agent-sso-update`
+- **Any GitHub call:** `executeTool(slug, args, connectedAccountId)` — defaults to the GitHub entity
 
 Do NOT call `composio.tools.execute(...)` directly. Do NOT call `executeTool` for Linear slugs. Always use `executeLinearTool` for `LINEAR_*` slugs — the wrapper is the enforcement mechanism.
 
@@ -44,32 +45,29 @@ If you're adding a new Linear call, use `executeLinearTool`. Don't reach for the
 
 ## Linear-specific rules
 
-- **Webhook trigger:** `LINEAR_ISSUE_UPDATED_TRIGGER`, scoped to the Logos project. Configured via `scripts/setup-trigger.ts`.
-- **"In Review" state ID:** `db21e0d5-b9b1-4861-ace9-7f2d2ebd85bb` (hardcoded in `process-logo.ts` and `handle-done.ts`).
-- **Team ID:** `48c4ab35-8398-408d-967b-881b13d7ca57` (from `LINEAR_TEAM_ID` env).
-- **Logos project ID:** hardcoded in `batch/route.ts` and `backfill/route.ts` as `LOGOS_PROJECT_ID`.
-- **Triage state name:** `Triage`.
+- **Webhook trigger:** `LINEAR_ISSUE_UPDATED_TRIGGER`, scoped to the configured project (`LINEAR_PROJECT_NAME`, default `"Logos"`). Configured via `scripts/setup-trigger.ts`.
+- **"In Review" state ID:** `LINEAR_IN_REVIEW_STATE_ID` env.
+- **Team ID:** `LINEAR_TEAM_ID` env.
+- **Project ID:** `LINEAR_LOGOS_PROJECT_ID` env.
+- **Triage state name:** `LINEAR_TRIAGE_STATE_NAME` env (default `"Triage"`).
+- All of the above are read through helpers in `src/lib/config.ts` — never hardcode IDs in route files.
 - **Image previews in Linear comments:** Linear does NOT render `data:image/*;base64,...` URIs — they show up as literal base64 text. Always use a `raw.githubusercontent.com` URL. Prefer a merge-commit-SHA-pinned URL (`.../logo-cdn/<sha>/src/assets/<slug>.svg`) if you want the preview frozen in time; `master` URL is fine for live previews.
 - **Issue title normalization:** the webhook renames `"[Logo Request] submission"` titles to `"[<slug>] Add logo"` so downstream tooling has a consistent title.
 - **Agent comment marker:** every comment the agent posts starts with `**Logo Agent**`. Use this to detect / clean up prior comments before writing new ones.
 
 ## GitHub-specific rules
 
+- **Target repo:** `LOGO_REPO_OWNER` + `LOGO_REPO_NAME` env, base branch `LOGO_REPO_BRANCH` (default `main`). Read via `src/lib/config.ts`.
 - **PR branch naming:** `logo/<slug>`. Branches are deleted after merge (see `mergePRForSlug`).
 - **PR preview image URL:**
-  - **In the PR body** (`github.ts`) — use the `master` branch URL. Branches get deleted on merge, so a branch URL 404s post-merge.
-  - **In the Linear "ready for review" comment** (`process-logo.ts`) — use the `logo/<slug>` branch URL. The file isn't on master yet (the PR is still open), and the branch is guaranteed to exist until `handleDone` merges and deletes it.
+  - **In the PR body** (`github.ts`) — use the base-branch URL. Feature branches get deleted on merge, so a branch URL 404s post-merge.
+  - **In the Linear "ready for review" comment** (`process-logo.ts`) — use the `logo/<slug>` branch URL. The file isn't on the base branch yet (the PR is still open), and the branch is guaranteed to exist until `handleDone` merges and deletes it.
 - **Merge strategy:** squash merges.
 - **Merge gating:** PRs are NOT auto-merged. They stay open until a human moves the Linear issue to **Done**, which fires the webhook → `handleDone` → merge. This is the human-approval step.
 
 ## Environment variables
 
-Required (see `.env.example`):
-- `COMPOSIO_API_KEY` — Composio API key
-- `COMPOSIO_WEBHOOK_SECRET` — shared secret for webhook HMAC verification
-- `LINEAR_CONNECTED_ACCOUNT` — Linear connected account ID (`ca_32jlkHR7XaS-`)
-- `LINEAR_TEAM_ID` — Linear team ID
-- `VECTORIZER_API_ID` (or `VECTORIZER_API_KEY`) + `VECTORIZER_API_SECRET` — vectorizer.ai credentials
+See `.env.example` for the full list with comments. All workspace/repo/state IDs come from env via `src/lib/config.ts` — do not reintroduce hardcoded UUIDs in route files.
 
 ## Local dev
 
@@ -85,16 +83,17 @@ Utility scripts (all via `npx tsx scripts/<name>.ts`):
 - `list-triggers.ts` — list available Linear triggers + current connected accounts
 - `test-linear.ts` — smoke-test Linear tool access
 
-## Deploying
+## Deploying (maintainer runbook)
 
-**Production runs on Railway. The service is NOT connected to GitHub**, so merging a PR does NOT auto-deploy. You must manually push a deploy after every merge.
+This section is specific to the maintainer's Railway deploy. A fork is free to deploy anywhere Node + Next.js runs — Vercel, Fly, Render, self-hosted, etc.
 
-### After a PR you opened is merged to main, deploy it
+**Production runs on Railway. The service is NOT connected to GitHub**, so merging a PR does NOT auto-deploy. The maintainer manually pushes a deploy after every merge.
+
+### After a PR is merged to main, deploy it
 
 From the main repo checkout (not a worktree):
 
 ```bash
-cd /Users/malayvasa/Developer/GitHub/logo-agent
 git checkout main
 git pull --ff-only origin main
 railway up --service logo-agent --ci

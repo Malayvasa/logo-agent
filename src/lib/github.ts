@@ -1,9 +1,5 @@
 import { executeTool } from "./composio";
-
-const REPO_OWNER = "ComposioHQ";
-const REPO_NAME = "logo-cdn";
-const BASE_BRANCH = "master";
-const GITHUB_CONNECTED_ACCOUNT = "ca_WTKgBWdCdU0P";
+import { repoOwner, repoName, repoBranch, githubConnectedAccount } from "./config";
 
 interface PrResult {
   prUrl: string;
@@ -15,13 +11,17 @@ export async function commitAndCreatePR(
   svgContent: string,
   issueIdentifier: string
 ): Promise<PrResult> {
+  const owner = repoOwner();
+  const repo = repoName();
+  const baseBranch = repoBranch();
+  const githubAccount = githubConnectedAccount();
   const branchName = `logo/${slug}`;
   const filePath = `src/assets/${slug}.svg`;
   const commitMessage = `feat: add ${slug} logo`;
   const prTitle = `Add ${slug} logo`;
-  // Use master URL so the preview keeps working post-merge (the branch gets
-  // deleted by mergePRForSlug). Cache-bust so force-pushes refresh the preview.
-  const rawSvgUrl = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${BASE_BRANCH}/${filePath}?v=${Date.now()}`;
+  // Use base-branch URL so the preview keeps working post-merge (the feature
+  // branch gets deleted by mergePRForSlug). Cache-bust so force-pushes refresh.
+  const rawSvgUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${baseBranch}/${filePath}?v=${Date.now()}`;
   const prBody = [
     `Adds the ${slug} logo SVG to the asset library.`,
     ``,
@@ -37,10 +37,10 @@ export async function commitAndCreatePR(
   let branchExists = false;
   try {
     const existing = await executeTool("GITHUB_GET_A_BRANCH", {
-      owner: REPO_OWNER,
-      repo: REPO_NAME,
+      owner,
+      repo,
       branch: branchName,
-    }, GITHUB_CONNECTED_ACCOUNT);
+    }, githubAccount);
     branchExists = !!existing.data?.commit?.sha;
   } catch {
     branchExists = false;
@@ -51,21 +51,21 @@ export async function commitAndCreatePR(
   } else {
     // Create new branch from base
     const branchResult = await executeTool("GITHUB_GET_A_BRANCH", {
-      owner: REPO_OWNER,
-      repo: REPO_NAME,
-      branch: BASE_BRANCH,
-    }, GITHUB_CONNECTED_ACCOUNT);
+      owner,
+      repo,
+      branch: baseBranch,
+    }, githubAccount);
     const baseSha = branchResult.data?.commit?.sha;
     if (!baseSha) {
       throw new Error(`Failed to get base branch SHA`);
     }
 
     await executeTool("GITHUB_CREATE_A_REFERENCE", {
-      owner: REPO_OWNER,
-      repo: REPO_NAME,
+      owner,
+      repo,
       ref: `refs/heads/${branchName}`,
       sha: baseSha,
-    }, GITHUB_CONNECTED_ACCOUNT);
+    }, githubAccount);
     console.log(`[github] Created branch: ${branchName}`);
   }
 
@@ -73,11 +73,11 @@ export async function commitAndCreatePR(
   let existingFileSha: string | undefined;
   try {
     const fileResult = await executeTool("GITHUB_GET_REPOSITORY_CONTENT", {
-      owner: REPO_OWNER,
-      repo: REPO_NAME,
+      owner,
+      repo,
       path: filePath,
       ref: branchName,
-    }, GITHUB_CONNECTED_ACCOUNT);
+    }, githubAccount);
     existingFileSha = fileResult.data?.sha;
   } catch {
     // File doesn't exist yet, that's fine
@@ -87,14 +87,14 @@ export async function commitAndCreatePR(
   const contentBase64 = Buffer.from(svgContent).toString("base64");
 
   await executeTool("GITHUB_CREATE_OR_UPDATE_FILE_CONTENTS", {
-    owner: REPO_OWNER,
-    repo: REPO_NAME,
+    owner,
+    repo,
     path: filePath,
     message: existingFileSha ? `fix: update ${slug} logo` : commitMessage,
     content: contentBase64,
     branch: branchName,
     ...(existingFileSha ? { sha: existingFileSha } : {}),
-  }, GITHUB_CONNECTED_ACCOUNT);
+  }, githubAccount);
   console.log(`[github] ${existingFileSha ? "Updated" : "Committed"} ${filePath} to ${branchName}`);
 
   // Step 4: Find existing open PR or create new one
@@ -106,13 +106,13 @@ export async function commitAndCreatePR(
     console.log(`[github] Existing PR found: ${prUrl}`);
   } else {
     const prResult = await executeTool("GITHUB_CREATE_A_PULL_REQUEST", {
-      owner: REPO_OWNER,
-      repo: REPO_NAME,
+      owner,
+      repo,
       title: prTitle,
       body: prBody,
       head: branchName,
-      base: BASE_BRANCH,
-    }, GITHUB_CONNECTED_ACCOUNT);
+      base: baseBranch,
+    }, githubAccount);
 
     prUrl = prResult.data?.html_url || prResult.data?.url || "PR created (URL unknown)";
     console.log(`[github] PR created: ${prUrl}`);
@@ -125,11 +125,11 @@ export async function commitAndCreatePR(
 async function findOpenPRs(branchName: string): Promise<any[]> {
   try {
     const prsResult = await executeTool("GITHUB_LIST_PULL_REQUESTS", {
-      owner: REPO_OWNER,
-      repo: REPO_NAME,
-      head: `${REPO_OWNER}:${branchName}`,
+      owner: repoOwner(),
+      repo: repoName(),
+      head: `${repoOwner()}:${branchName}`,
       state: "open",
-    }, GITHUB_CONNECTED_ACCOUNT);
+    }, githubConnectedAccount());
     return Array.isArray(prsResult.data)
       ? prsResult.data
       : prsResult.data?.pull_requests || prsResult.data?.data || [];
@@ -139,6 +139,9 @@ async function findOpenPRs(branchName: string): Promise<any[]> {
 }
 
 export async function mergePRForSlug(slug: string): Promise<string> {
+  const owner = repoOwner();
+  const repo = repoName();
+  const githubAccount = githubConnectedAccount();
   const branchName = `logo/${slug}`;
 
   const prs = await findOpenPRs(branchName);
@@ -153,20 +156,20 @@ export async function mergePRForSlug(slug: string): Promise<string> {
 
   // Merge the PR
   await executeTool("GITHUB_MERGE_A_PULL_REQUEST", {
-    owner: REPO_OWNER,
-    repo: REPO_NAME,
+    owner,
+    repo,
     pull_number: prNumber,
     merge_method: "squash",
-  }, GITHUB_CONNECTED_ACCOUNT);
+  }, githubAccount);
   console.log(`[github] Merged PR #${prNumber}`);
 
   // Delete the branch
   try {
     await executeTool("GITHUB_DELETE_A_REFERENCE", {
-      owner: REPO_OWNER,
-      repo: REPO_NAME,
+      owner,
+      repo,
       ref: `heads/${branchName}`,
-    }, GITHUB_CONNECTED_ACCOUNT);
+    }, githubAccount);
     console.log(`[github] Deleted branch ${branchName}`);
   } catch (err) {
     console.warn(`[github] Failed to delete branch ${branchName}:`, err);

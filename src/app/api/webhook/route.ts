@@ -3,6 +3,7 @@ import { getComposio, executeLinearTool } from "@/lib/composio";
 import { processLogo } from "@/lib/process-logo";
 import { handleDone } from "@/lib/handle-done";
 import { isPublicHttpUrl } from "@/lib/auth";
+import { linearProjectName, repoUrlFragment } from "@/lib/config";
 import type { LinearIssuePayload, LogoRequest } from "@/types";
 
 // Dedup: track slugs currently being processed to avoid duplicate runs from rapid webhook fires
@@ -73,9 +74,10 @@ export async function POST(request: NextRequest) {
       issueData?.project?.name
     );
 
-    // Only handle issues in the "Logos" project
-    if (issueData?.project?.name !== "Logos") {
-      console.log(`[webhook] Project is "${issueData?.project?.name}", not "Logos" — skipping`);
+    // Only handle issues in the configured project
+    const expectedProject = linearProjectName();
+    if (issueData?.project?.name !== expectedProject) {
+      console.log(`[webhook] Project is "${issueData?.project?.name}", not "${expectedProject}" — skipping`);
       return NextResponse.json({
         status: "skipped",
         reason: `project is "${issueData?.project?.name}"`,
@@ -299,9 +301,10 @@ async function handleCommentEvent(commentData: any): Promise<NextResponse> {
     return NextResponse.json({ status: "skipped", reason: "missing issue details" });
   }
 
-  if (projectName && projectName !== "Logos") {
-    console.log(`[webhook] Comment on non-Logos project "${projectName}", skipping`);
-    return NextResponse.json({ status: "skipped", reason: "not Logos project" });
+  const expectedProject = linearProjectName();
+  if (projectName && projectName !== expectedProject) {
+    console.log(`[webhook] Comment on non-${expectedProject} project "${projectName}", skipping`);
+    return NextResponse.json({ status: "skipped", reason: `not ${expectedProject} project` });
   }
 
   const slug = deriveSlug(issueTitle, issueDescription);
@@ -335,7 +338,7 @@ async function handleCommentEvent(commentData: any): Promise<NextResponse> {
 }
 
 function isRepoUrl(url: string): boolean {
-  return url.includes("github.com/ComposioHQ/logo-cdn");
+  return url.includes(repoUrlFragment());
 }
 
 function extractUrl(text: string): string | null {

@@ -4,6 +4,12 @@ import { vectorize, ImageFetchError } from "@/lib/vectorize";
 import { normalizeSvg } from "@/lib/normalize-svg";
 import { commitAndCreatePR, mergePRForSlug } from "@/lib/github";
 import { requireAdmin } from "@/lib/auth";
+import {
+  linearProjectId,
+  linearInReviewStateId,
+  repoOwner,
+  repoName,
+} from "@/lib/config";
 
 const COMPOSIO_API_KEY = process.env.COMPOSIO_API_KEY;
 let _linearConnectedAccount: string | null = null;
@@ -25,9 +31,11 @@ async function getLinearConnectedAccount(): Promise<string | null> {
     return null;
   }
 }
-const DESIGN_TEAM_ID = "48c4ab35-8398-408d-967b-881b13d7ca57";
-const LOGOS_PROJECT_ID = "ceb6c22a-2b56-477e-b705-92c7a2ae8f2e";
-const IN_REVIEW_STATE_ID = "db21e0d5-b9b1-4861-ace9-7f2d2ebd85bb";
+function requireTeamId(): string {
+  const id = process.env.LINEAR_TEAM_ID;
+  if (!id) throw new Error("LINEAR_TEAM_ID is not set");
+  return id;
+}
 
 // Track active backfill to prevent duplicates
 let activeBackfill: {
@@ -141,7 +149,7 @@ async function searchForWebsite(slug: string): Promise<string | null> {
 async function createLinearIssueForReview(slug: string, prUrl: string, websiteUrl: string): Promise<void> {
   if (!COMPOSIO_API_KEY) return;
 
-  const svgPreviewUrl = `https://raw.githubusercontent.com/ComposioHQ/logo-cdn/refs/heads/logo/${slug}/src/assets/${slug}.svg`;
+  const svgPreviewUrl = `https://raw.githubusercontent.com/${repoOwner()}/${repoName()}/refs/heads/logo/${slug}/src/assets/${slug}.svg`;
 
   const description = [
     `#### Slug :`,
@@ -157,7 +165,7 @@ async function createLinearIssueForReview(slug: string, prUrl: string, websiteUr
     `[${prUrl}](<${prUrl}>)`,
     ``,
     `---`,
-    `*Created by @devos-malay ⚡ via backfill*`,
+    `*Created via logo-agent backfill*`,
   ].join("\n");
 
   const res = await fetch(
@@ -173,9 +181,9 @@ async function createLinearIssueForReview(slug: string, prUrl: string, websiteUr
         input: {
           title: `[${slug}] Add logo`,
           description,
-          team_id: DESIGN_TEAM_ID,
-          project_id: LOGOS_PROJECT_ID,
-          state_id: IN_REVIEW_STATE_ID,
+          team_id: requireTeamId(),
+          project_id: linearProjectId(),
+          state_id: linearInReviewStateId(),
         },
       }),
     }

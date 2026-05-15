@@ -5,7 +5,7 @@ import { normalizeSvg } from "./normalize-svg";
 import { commitAndCreatePR } from "./github";
 import { executeLinearTool } from "./composio";
 import { fetchWithLinearAuth } from "./linear-fetch";
-const IN_REVIEW_STATE_ID = "db21e0d5-b9b1-4861-ace9-7f2d2ebd85bb";
+import { linearInReviewStateId, repoOwner, repoName } from "./config";
 
 async function createComment(issueId: string, body: string): Promise<string | null> {
   try {
@@ -184,7 +184,7 @@ export async function processLogo(request: LogoRequest): Promise<string> {
     // "Done" (see handleDone). Pre-merge the file isn't on master yet, so
     // point the preview at the branch (it exists until handleDone deletes it).
     console.log(`[process-logo] Step 5: Updating Linear issue`);
-    const svgPreviewUrl = `https://raw.githubusercontent.com/ComposioHQ/logo-cdn/logo/${slug}/src/assets/${slug}.svg?v=${Date.now()}`;
+    const svgPreviewUrl = `https://raw.githubusercontent.com/${repoOwner()}/${repoName()}/logo/${slug}/src/assets/${slug}.svg?v=${Date.now()}`;
     if (commentId) {
       await updateComment(
         commentId,
@@ -196,7 +196,7 @@ export async function processLogo(request: LogoRequest): Promise<string> {
     try {
       await executeLinearTool("LINEAR_UPDATE_ISSUE", {
         issueId: request.issueId,
-        stateId: IN_REVIEW_STATE_ID,
+        stateId: linearInReviewStateId(),
       });
       console.log(`[process-logo] Moved issue to In Review`);
     } catch (err) {
