@@ -2,7 +2,7 @@
 
 # Logo Agent
 
-> Turns Linear logo requests into reviewed PRs on your logo CDN.
+> Your third-party logo library, auto-maintained from Linear.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Built with Composio](https://img.shields.io/badge/built%20with-Composio-7c3aed)](https://composio.dev)
@@ -13,7 +13,7 @@
      Linear ticket → preview comment → PR → Done → merge.
      Aider's screencast and Claude Code's demo.gif are good references. -->
 
-A designer files a Linear issue with a website URL. Logo Agent fetches the favicon, vectorizes it to a 128×128 SVG, opens a PR on your logo CDN repo, and comments back with a preview. The PR merges only after a human moves the issue to **Done**.
+Many products maintain a library of third-party logos — for integrations they support, partners they list, tools they reference in docs. Keeping that library current is a recurring chore: find a favicon, vectorize it, normalize the dimensions, open a PR, review, merge. Logo Agent automates the chore. A designer files a Linear ticket with a website URL; the agent fetches the favicon, vectorizes it, opens a PR with a preview, and merges only when a human moves the ticket to **Done**.
 
 It's a real, in-production agent running on [Composio](https://composio.dev) — ~600 lines of TypeScript wiring Linear webhooks to GitHub PRs to [vectorizer.ai](https://vectorizer.ai), with the right escape hatches for when the favicon picker gets it wrong.
 
