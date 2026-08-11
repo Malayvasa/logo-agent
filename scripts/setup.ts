@@ -6,7 +6,7 @@
 //   1. Composio CLI auth + project binding + API key paste
 //   2. OAuth-link GitHub via REST (open browser, poll until ACTIVE)
 //   3. Same for Linear
-//   4. Linear workspace pickers (team / project / "In Review" state)
+//   4. Linear workspace pickers (team / project / merged + fallback states)
 //   5. GitHub target repo, then write .env
 //
 // Run with: npm run setup
@@ -438,7 +438,11 @@ async function main() {
   const states: NamedThing[] = statesResp?.team?.states?.nodes || [];
   const inReview = await pickFrom(
     states,
-    "After a PR is opened, which state should the Linear issue move to?"
+    "If a PR can't be merged automatically, which state should the issue move to?"
+  );
+  const done = await pickFrom(
+    states,
+    "Once the PR is merged, which state should the issue move to?"
   );
 
   // ─── Step 6: GitHub target repo ─────────────────────────────────────────
@@ -478,6 +482,7 @@ async function main() {
     `LINEAR_TEAM_ID=${team.id}`,
     `LINEAR_LOGOS_PROJECT_ID=${project.id}`,
     `LINEAR_IN_REVIEW_STATE_ID=${inReview.id}`,
+    `LINEAR_DONE_STATE_ID=${done.id}`,
     "",
     "# ─── Vectorizer.ai ───────────────────────────────────────────────",
     `VECTORIZER_API_ID=${vId}`,
