@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { fetchFavicon } from "@/lib/fetch-favicon";
 import { vectorize, ImageFetchError } from "@/lib/vectorize";
 import { normalizeSvg } from "@/lib/normalize-svg";
-import { commitAndCreatePR, mergePRForSlug } from "@/lib/github";
+import { commitAndCreatePR, mergePR } from "@/lib/github";
 import { requireAdmin } from "@/lib/auth";
 import {
   linearProjectId,
@@ -246,14 +246,15 @@ async function processOne(slug: string, autoMerge: boolean, websiteUrlOverride?:
     const normalizedSvg = normalizeSvg(rawSvg);
 
     // Step 5: Create PR
-    const { prUrl } = await commitAndCreatePR(slug, normalizedSvg, "backfill");
+    const { prUrl, prNumber, branchName } = await commitAndCreatePR(slug, normalizedSvg, "backfill");
     console.log(`[backfill] PR created for ${slug}: ${prUrl}`);
 
-    // Step 6: Auto-merge if enabled
+    // Step 6: Auto-merge if enabled. Merge by PR number rather than by slug —
+    // the branch may have been resolved to logo/<slug>-N.
     let merged = false;
     if (autoMerge) {
       try {
-        await mergePRForSlug(slug);
+        await mergePR(prNumber, branchName);
         merged = true;
         console.log(`[backfill] Auto-merged PR for ${slug}`);
       } catch (err) {

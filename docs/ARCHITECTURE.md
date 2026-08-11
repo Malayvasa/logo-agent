@@ -24,20 +24,25 @@ A guide for forkers and contributors — what the code is, where the seams are, 
 │   2. fetchFavicon(websiteUrl) → list of candidate image URLs    │
 │   3. for each candidate: vectorize via vectorizer.ai → SVG      │
 │   4. normalizeSvg → 128×128 viewBox                             │
-│   5. commitAndCreatePR on <your-repo>/logo-cdn                  │
-│   6. update ticket with PR link + preview image                 │
-│   7. transition ticket → "In Review"                            │
+│   5. commitAndCreatePR on <your-repo>/logo-cdn (fresh branch)   │
+│   6. mergePR() squash-merges + deletes the branch               │
+│   7. update ticket: PR link + preview pinned to the merge SHA   │
+│   8. transition ticket → "Done" (→ "In Review" if merge failed) │
 └────────────────┬────────────────────────────────────────────────┘
                  │
-        ⏳ designer reviews and moves ticket to "Done"
+        🔁 wrong logo? designer comments a replacement image
                  │
                  ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ POST /api/webhook (Done state transition)                       │
-│   → handleDone() squash-merges + deletes branch                 │
-│   → comments back on ticket: "merged ✅"                        │
+│ POST /api/webhook (comment created)                             │
+│   → processLogo() again with the comment's image/SVG            │
+│   → a NEW branch → a NEW PR → merged the same way               │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+Reviewing happens after the merge, not before it. There's no human gate on the
+way in; the correction loop is the comment path, and it's cheap because each
+run gets its own branch and PR.
 
 ## Entry points
 
@@ -60,7 +65,7 @@ All in `src/lib/`:
 - **`github.ts`** — GitHub ops via Composio (create branch, commit, open PR, merge, delete branch).
 - **`composio.ts`** — Composio client + per-toolkit dispatch wrappers (`executeLinearTool` for Linear, `executeTool` for GitHub).
 - **`linear-fetch.ts`** — fetch wrapper that adds the Linear API-key Authorization header for `uploads.linear.app` URLs (Linear's CDN is auth-gated and Composio doesn't proxy it).
-- **`handle-done.ts`** — runs on the "Done" state transition. Merges the open PR for the slug, deletes the branch, comments back.
+- **`handle-done.ts`** — backstop on the "Done" state transition. `processLogo` already merges and moves the issue to Done itself, so this normally finds no open PR; it's there to catch a PR whose auto-merge failed and that a human then approved.
 - **`auth.ts`** — admin Bearer-token auth + public-IP-only SSRF guard for comment-supplied URLs.
 - **`config.ts`** — centralized env reads, lazy so missing vars fail at first use.
 
@@ -93,7 +98,7 @@ src/
     github.ts               ← branch / commit / PR / merge ops
     composio.ts             ← Composio client + dispatch wrappers
     linear-fetch.ts         ← fetch wrapper that auths uploads.linear.app
-    handle-done.ts          ← merge handler on the Done transition
+    handle-done.ts          ← Done-transition backstop for failed auto-merges
     auth.ts                 ← admin Bearer auth + SSRF guard
     config.ts               ← env-var reads
   types/index.ts
@@ -107,7 +112,9 @@ scripts/
 
 ## Design choices worth knowing about
 
-- **The merge gate is a Linear state transition, not a button.** Moving the issue to **Done** is what fires the merge. This makes the "approve" action live in the same surface the designer is already in.
+- **No merge gate; a correction loop instead.** PRs are auto-merged the moment they're opened. The bet is that for a logo library, a wrong logo shipped for ten minutes costs less than a review queue nobody drains — and the fix is one Linear comment, which opens and merges a fresh PR. Reintroduce the gate (branch protection, or restore `handleDone` as the only merge path) if your CDN can't take that.
+- **One branch per run, never reused.** `commitAndCreatePR` resolves `logo/<slug>`, then `logo/<slug>-2`, `-3`… to the first name that's free. That's what makes a follow-up comment open a *new* PR instead of amending a merged one; in the normal flow the previous branch was deleted at merge time, so runs land back on `logo/<slug>`.
+- **Previews are pinned to the merge commit.** Post-merge the feature branch is gone and the base branch keeps moving, so the Linear comment links `raw.githubusercontent.com/<owner>/<repo>/<merge-sha>/…` — the preview stays exactly what was approved.
 - **The agent uses an LLM minimally.** Only the favicon-candidate ranking has heuristics; everything else is a deterministic pipeline. Most "agent" demos overuse LLMs — this one doesn't.
 - **Composio dispatches per-toolkit user IDs.** Linear and GitHub connections can live under different Composio entities (different SSO scopes). The wrappers in `src/lib/composio.ts` pre-bind the right userId per toolkit; calling the bare SDK fails with `ActionExecute_ConnectedAccountEntityIdMismatch`.
 - **All workspace/repo IDs are env-driven.** A fork brings its own Linear team / project / state IDs and target GitHub repo. See [docs/SETUP.md](SETUP.md).

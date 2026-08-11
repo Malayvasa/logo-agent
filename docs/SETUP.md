@@ -29,7 +29,7 @@ The setup script:
 2. Binds the directory to a Composio project via `composio dev init`
 3. Opens the project's API key page in your browser
 4. OAuths GitHub + Linear via Composio's REST flow (polls until ACTIVE)
-5. Lets you pick a Linear team, project, and "In Review" state from your real workspace
+5. Lets you pick a Linear team, project, and the workflow states for merged / stuck issues from your real workspace
 6. Asks for the GitHub target repo
 7. Generates webhook + admin secrets
 8. Writes `.env`
@@ -55,7 +55,8 @@ If `npm run setup` doesn't fit your environment, do it by hand:
 5. **Linear workspace IDs.** Three of them:
    - `LINEAR_TEAM_ID` — the team that owns the logo project
    - `LINEAR_LOGOS_PROJECT_ID` — the project the agent watches
-   - `LINEAR_IN_REVIEW_STATE_ID` — the workflow state issues move to once the PR is open
+   - `LINEAR_IN_REVIEW_STATE_ID` — the state issues fall back to when the PR opened but couldn't be auto-merged
+   - `LINEAR_DONE_STATE_ID` — optional; the state issues move to once the PR is merged. Unset, merged issues park in `LINEAR_IN_REVIEW_STATE_ID`
 
    Easiest way to fetch these: Linear's GraphQL API at <https://linear.app/developers/graphql>. Run `query { teams { nodes { id name } } }`, then `team(id: …) { projects { nodes { id name } } states { nodes { id name } } }`.
 
@@ -108,6 +109,7 @@ The reference deploy runs on Railway with `railway up --service logo-agent --ci`
 
 - **"ConnectedAccountEntityIdMismatch" on Linear calls.** You're calling `executeTool` on a `LINEAR_*` slug instead of `executeLinearTool`. The wrappers in [`src/lib/composio.ts`](../src/lib/composio.ts) pre-bind the right userId per toolkit.
 - **Linear comment renders as `data:image/svg+xml;base64,…` text.** Linear doesn't render data URIs in comments. Use a `raw.githubusercontent.com` URL.
+- **Auto-merge fails and the issue sits in "In Review".** Branch protection requiring an approving review will block the agent's merge — it retries a few times, then leaves the PR open with the error in the Linear comment. Either drop the review requirement on the base branch or merge those by hand (moving the issue to **Done** also merges any leftover open PR).
 - **PR preview image 404s after merge.** The PR body should point at the base branch, not the feature branch (which gets deleted on merge). Should already be the case via `repoBranch()` in [`github.ts`](../src/lib/github.ts).
 - **Webhook fires twice for the same slug.** [`webhook/route.ts`](../src/app/api/webhook/route.ts) has a `processing` Set for dedup. Reuse it rather than adding a new one.
 - **Vectorizer fails with "Image format not supported".** The source is probably an ICO or WebP that `sharp` can't convert. Handled — `vectorize.ts` catches this and tries the next candidate.

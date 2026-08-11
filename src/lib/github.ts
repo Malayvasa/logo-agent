@@ -3,7 +3,59 @@ import { repoOwner, repoName, repoBranch, githubConnectedAccount } from "./confi
 
 interface PrResult {
   prUrl: string;
+  prNumber: number;
   branchName: string;
+}
+
+export interface MergeResult {
+  prUrl: string;
+  /** Squash-merge commit SHA on the base branch. Use it to pin preview URLs. */
+  mergeCommitSha: string;
+}
+
+// How many `logo/<slug>-N` variants to try before giving up on finding a free
+// branch name.
+const MAX_BRANCH_ATTEMPTS = 20;
+// GitHub computes mergeability asynchronously; a PR created a second ago can
+// briefly report as not mergeable.
+const MERGE_ATTEMPTS = 4;
+const MERGE_RETRY_MS = 3000;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function branchExists(branch: string): Promise<boolean> {
+  try {
+    const result = await executeTool("GITHUB_GET_A_BRANCH", {
+      owner: repoOwner(),
+      repo: repoName(),
+      branch,
+    }, githubConnectedAccount());
+    return !!result.data?.commit?.sha;
+  } catch {
+    return false;
+  }
+}
+
+// Every run gets its own branch, so every run opens its own PR — that's what
+// makes a follow-up comment on an already-merged issue produce a *new* PR
+// rather than silently reusing the old one. In the normal flow the previous
+// branch is deleted at merge time, so we land back on `logo/<slug>`; the
+// numbered suffixes only come into play when an earlier merge failed and left
+// its branch behind.
+async function resolveBranchName(slug: string): Promise<string> {
+  const base = `logo/${slug}`;
+  for (let i = 1; i <= MAX_BRANCH_ATTEMPTS; i++) {
+    const candidate = i === 1 ? base : `${base}-${i}`;
+    if (!(await branchExists(candidate))) {
+      if (i > 1) {
+        console.log(`[github] ${base} still exists, using ${candidate} instead`);
+      }
+      return candidate;
+    }
+  }
+  throw new Error(
+    `No free branch name for ${slug} (tried ${base} through ${base}-${MAX_BRANCH_ATTEMPTS})`
+  );
 }
 
 export async function commitAndCreatePR(
@@ -15,12 +67,11 @@ export async function commitAndCreatePR(
   const repo = repoName();
   const baseBranch = repoBranch();
   const githubAccount = githubConnectedAccount();
-  const branchName = `logo/${slug}`;
+  const branchName = await resolveBranchName(slug);
   const filePath = `src/assets/${slug}.svg`;
-  const commitMessage = `feat: add ${slug} logo`;
   const prTitle = `Add ${slug} logo`;
   // Use base-branch URL so the preview keeps working post-merge (the feature
-  // branch gets deleted by mergePRForSlug). Cache-bust so force-pushes refresh.
+  // branch gets deleted by mergePR). Cache-bust so re-runs refresh.
   const rawSvgUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${baseBranch}/${filePath}?v=${Date.now()}`;
   const prBody = [
     `Adds the ${slug} logo SVG to the asset library.`,
@@ -33,43 +84,28 @@ export async function commitAndCreatePR(
     `Generated automatically by logo-agent.`,
   ].join("\n");
 
-  // Step 1: Check if branch already exists
-  let branchExists = false;
-  try {
-    const existing = await executeTool("GITHUB_GET_A_BRANCH", {
-      owner,
-      repo,
-      branch: branchName,
-    }, githubAccount);
-    branchExists = !!existing.data?.commit?.sha;
-  } catch {
-    branchExists = false;
+  // Step 1: Branch off the base branch
+  const branchResult = await executeTool("GITHUB_GET_A_BRANCH", {
+    owner,
+    repo,
+    branch: baseBranch,
+  }, githubAccount);
+  const baseSha = branchResult.data?.commit?.sha;
+  if (!baseSha) {
+    throw new Error(`Failed to get base branch SHA`);
   }
 
-  if (branchExists) {
-    console.log(`[github] Branch ${branchName} already exists, reusing`);
-  } else {
-    // Create new branch from base
-    const branchResult = await executeTool("GITHUB_GET_A_BRANCH", {
-      owner,
-      repo,
-      branch: baseBranch,
-    }, githubAccount);
-    const baseSha = branchResult.data?.commit?.sha;
-    if (!baseSha) {
-      throw new Error(`Failed to get base branch SHA`);
-    }
+  await executeTool("GITHUB_CREATE_A_REFERENCE", {
+    owner,
+    repo,
+    ref: `refs/heads/${branchName}`,
+    sha: baseSha,
+  }, githubAccount);
+  console.log(`[github] Created branch: ${branchName}`);
 
-    await executeTool("GITHUB_CREATE_A_REFERENCE", {
-      owner,
-      repo,
-      ref: `refs/heads/${branchName}`,
-      sha: baseSha,
-    }, githubAccount);
-    console.log(`[github] Created branch: ${branchName}`);
-  }
-
-  // Step 2: Get existing file SHA if it exists (needed for updates)
+  // Step 2: Get existing file SHA if it exists (needed for updates). The
+  // branch is fresh off base, so this is really "does the base branch already
+  // carry a logo for this slug" — true for every re-run after a first merge.
   let existingFileSha: string | undefined;
   try {
     const fileResult = await executeTool("GITHUB_GET_REPOSITORY_CONTENT", {
@@ -90,21 +126,18 @@ export async function commitAndCreatePR(
     owner,
     repo,
     path: filePath,
-    message: existingFileSha ? `fix: update ${slug} logo` : commitMessage,
+    message: existingFileSha ? `fix: update ${slug} logo` : `feat: add ${slug} logo`,
     content: contentBase64,
     branch: branchName,
     ...(existingFileSha ? { sha: existingFileSha } : {}),
   }, githubAccount);
   console.log(`[github] ${existingFileSha ? "Updated" : "Committed"} ${filePath} to ${branchName}`);
 
-  // Step 4: Find existing open PR or create new one
-  let prUrl: string;
-  const existingPrs = await findOpenPRs(branchName);
-
-  if (existingPrs.length > 0) {
-    prUrl = existingPrs[0].html_url || existingPrs[0].url;
-    console.log(`[github] Existing PR found: ${prUrl}`);
-  } else {
+  // Step 4: Open the PR. On failure, bin the branch we just made so the next
+  // run gets a clean `logo/<slug>` instead of drifting to `-2`, `-3`, …
+  let prUrl: string | undefined;
+  let prNumber: number | undefined;
+  try {
     const prResult = await executeTool("GITHUB_CREATE_A_PULL_REQUEST", {
       owner,
       repo,
@@ -114,11 +147,25 @@ export async function commitAndCreatePR(
       base: baseBranch,
     }, githubAccount);
 
-    prUrl = prResult.data?.html_url || prResult.data?.url || "PR created (URL unknown)";
-    console.log(`[github] PR created: ${prUrl}`);
+    prUrl = prResult.data?.html_url || prResult.data?.url;
+    prNumber = prResult.data?.number;
+  } catch (err) {
+    await deleteBranch(branchName);
+    throw err;
   }
 
-  return { prUrl, branchName };
+  if (!prUrl || typeof prNumber !== "number") {
+    // The usual cause is an empty diff: the SVG we just wrote is byte-identical
+    // to what's already on the base branch, so the commit was a no-op and
+    // GitHub refuses a PR with no commits between the branches.
+    await deleteBranch(branchName);
+    throw new Error(
+      `Failed to open a PR for ${slug} — the generated SVG may be identical to the one already on ${baseBranch}`
+    );
+  }
+
+  console.log(`[github] PR created: ${prUrl} (#${prNumber})`);
+  return { prUrl, prNumber, branchName };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -138,12 +185,70 @@ async function findOpenPRs(branchName: string): Promise<any[]> {
   }
 }
 
-export async function mergePRForSlug(slug: string): Promise<string> {
-  const owner = repoOwner();
-  const repo = repoName();
-  const githubAccount = githubConnectedAccount();
-  const branchName = `logo/${slug}`;
+async function deleteBranch(branchName: string): Promise<void> {
+  try {
+    await executeTool("GITHUB_DELETE_A_REFERENCE", {
+      owner: repoOwner(),
+      repo: repoName(),
+      ref: `heads/${branchName}`,
+    }, githubConnectedAccount());
+    console.log(`[github] Deleted branch ${branchName}`);
+  } catch (err) {
+    console.warn(`[github] Failed to delete branch ${branchName}:`, err);
+  }
+}
 
+/**
+ * Squash-merge a PR and delete its branch. Retries a few times because GitHub
+ * computes mergeability asynchronously and a just-opened PR can report as not
+ * yet mergeable.
+ *
+ * Returns the merge commit SHA — pin preview URLs to it so they survive the
+ * branch deletion.
+ */
+export async function mergePR(prNumber: number, branchName: string): Promise<string> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= MERGE_ATTEMPTS; attempt++) {
+    try {
+      const result = await executeTool("GITHUB_MERGE_A_PULL_REQUEST", {
+        owner: repoOwner(),
+        repo: repoName(),
+        pull_number: prNumber,
+        merge_method: "squash",
+      }, githubConnectedAccount());
+
+      const sha: string | undefined = result.data?.sha;
+      const merged = result.data?.merged === true || !!sha;
+
+      if (merged) {
+        console.log(`[github] Merged PR #${prNumber} (${sha || "sha unknown"})`);
+        await deleteBranch(branchName);
+        return sha || "";
+      }
+
+      lastError = new Error(
+        result.data?.message || `GitHub did not confirm the merge of PR #${prNumber}`
+      );
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+    }
+
+    console.log(
+      `[github] Merge attempt ${attempt}/${MERGE_ATTEMPTS} for PR #${prNumber} failed: ${lastError.message}`
+    );
+    if (attempt < MERGE_ATTEMPTS) await sleep(MERGE_RETRY_MS);
+  }
+
+  throw lastError || new Error(`Failed to merge PR #${prNumber}`);
+}
+
+/**
+ * Merge whatever open PR exists for a slug's branch. Used by /api/backfill and
+ * by the Done-transition backstop; the main pipeline merges by PR number.
+ */
+export async function mergePRForSlug(slug: string): Promise<string> {
+  const branchName = `logo/${slug}`;
   const prs = await findOpenPRs(branchName);
   if (prs.length === 0) {
     console.log(`[github] No open PR for ${branchName}, skipping merge`);
@@ -154,26 +259,6 @@ export async function mergePRForSlug(slug: string): Promise<string> {
   const prUrl = prs[0].html_url || prs[0].url;
   console.log(`[github] Found PR #${prNumber} for ${branchName}`);
 
-  // Merge the PR
-  await executeTool("GITHUB_MERGE_A_PULL_REQUEST", {
-    owner,
-    repo,
-    pull_number: prNumber,
-    merge_method: "squash",
-  }, githubAccount);
-  console.log(`[github] Merged PR #${prNumber}`);
-
-  // Delete the branch
-  try {
-    await executeTool("GITHUB_DELETE_A_REFERENCE", {
-      owner,
-      repo,
-      ref: `heads/${branchName}`,
-    }, githubAccount);
-    console.log(`[github] Deleted branch ${branchName}`);
-  } catch (err) {
-    console.warn(`[github] Failed to delete branch ${branchName}:`, err);
-  }
-
+  await mergePR(prNumber, branchName);
   return prUrl;
 }

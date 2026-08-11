@@ -1,19 +1,19 @@
 # logo-agent
 
-An automated pipeline: designer files a Linear issue with a website URL → agent fetches a favicon → vectorizes it to SVG → opens a PR on `ComposioHQ/logo-cdn` → posts preview + PR link on the issue → moves the issue to "In Review". A human reviews the preview and moves the issue to **Done**, which triggers the merge.
+An automated pipeline: designer files a Linear issue with a website URL → agent fetches a favicon → vectorizes it to SVG → opens a PR on `ComposioHQ/logo-cdn` → **squash-merges it immediately** → posts the merged preview + PR link on the issue → moves the issue to "Done". There is no human merge gate. If the logo is wrong, the designer comments a replacement image on the same issue and the agent opens and merges a **new** PR.
 
 Production: https://logo-agent-production.up.railway.app
 
 ## Architecture at a glance
 
 **Entry points:**
-- `src/app/api/webhook/route.ts` — Linear webhook handler. Receives `LINEAR_ISSUE_UPDATED_TRIGGER` events from Composio, deduplicates, parses slug + website URL, kicks off `processLogo`. Also handles the `Done` state transition (merges the PR via `handleDone`) and comment-triggered reruns (`@logo-agent rerun <imageUrl>`).
+- `src/app/api/webhook/route.ts` — Linear webhook handler. Receives `LINEAR_ISSUE_UPDATED_TRIGGER` events from Composio, deduplicates, parses slug + website URL, kicks off `processLogo`. Also handles comment-triggered reruns (drop an image / URL / raw `<svg>` in a comment) and the `Done` state transition, which is now only a backstop (`handleDone`) for a PR whose auto-merge failed.
 - `src/app/api/batch/route.ts` — one-shot endpoint that pulls all Triage-state issues from the Logos project and processes them in sequence.
 - `src/app/api/backfill/route.ts` — batch endpoint that takes an explicit list of slugs and runs the full pipeline over them (for seeding logos without going through Linear). Uses Composio's v2 REST API directly for Linear issue creation (see "Two ways to call Composio" below).
 
 **Pipeline:**
-- `src/lib/process-logo.ts` — main agent flow. Creates a status comment, fetches favicon, vectorizes, normalizes SVG, opens PR, posts the preview + PR link, moves issue to "In Review". Does NOT merge — that happens on the Done transition.
-- `src/lib/handle-done.ts` — called when an issue moves to Done. Merges the open PR for that slug. This is the gating step: a human must approve by moving the issue to Done before anything lands on master.
+- `src/lib/process-logo.ts` — main agent flow. Creates a status comment, fetches favicon, vectorizes, normalizes SVG, opens a PR, **merges it**, posts the merged preview + PR link, moves the issue to "Done" (or "In Review" if the merge failed).
+- `src/lib/handle-done.ts` — backstop on the Done transition. `processLogo` merges its own PR and sets Done itself, so this normally finds nothing to merge; it only catches PRs whose auto-merge failed and that a human then approved.
 - `src/lib/fetch-favicon.ts` — discovers favicon candidates from a site (favicon.ico, apple-touch-icon, meta tags).
 - `src/lib/vectorize.ts` — raster → SVG via vectorizer.ai. SVG candidates skip this step (see `process-logo.ts`).
 - `src/lib/normalize-svg.ts` — resizes/centers the SVG to a 128×128 viewBox.
@@ -46,7 +46,8 @@ If you're adding a new Linear call, use `executeLinearTool`. Don't reach for the
 ## Linear-specific rules
 
 - **Webhook trigger:** `LINEAR_ISSUE_UPDATED_TRIGGER`, scoped to the configured project (`LINEAR_PROJECT_NAME`, default `"Logos"`). Configured via `scripts/setup-trigger.ts`.
-- **"In Review" state ID:** `LINEAR_IN_REVIEW_STATE_ID` env.
+- **"In Review" state ID:** `LINEAR_IN_REVIEW_STATE_ID` env — the fallback state when a PR opened but couldn't be merged.
+- **"Done" state ID:** `LINEAR_DONE_STATE_ID` env (optional). Where merged issues land. Unset, merged issues stay in "In Review".
 - **Team ID:** `LINEAR_TEAM_ID` env.
 - **Project ID:** `LINEAR_LOGOS_PROJECT_ID` env.
 - **Triage state name:** `LINEAR_TRIAGE_STATE_NAME` env (default `"Triage"`).
@@ -58,12 +59,13 @@ If you're adding a new Linear call, use `executeLinearTool`. Don't reach for the
 ## GitHub-specific rules
 
 - **Target repo:** `LOGO_REPO_OWNER` + `LOGO_REPO_NAME` env, base branch `LOGO_REPO_BRANCH` (default `main`). Read via `src/lib/config.ts`.
-- **PR branch naming:** `logo/<slug>`. Branches are deleted after merge (see `mergePRForSlug`).
+- **PR branch naming:** `logo/<slug>`, falling back to `logo/<slug>-2`, `-3`, … when the plain name is taken. Every run resolves a *free* branch name and never reuses an existing branch — that's what makes a comment rerun open a new PR instead of amending the old one. Branches are deleted right after merge, so the common case lands back on `logo/<slug>`.
 - **PR preview image URL:**
   - **In the PR body** (`github.ts`) — use the base-branch URL. Feature branches get deleted on merge, so a branch URL 404s post-merge.
-  - **In the Linear "ready for review" comment** (`process-logo.ts`) — use the `logo/<slug>` branch URL. The file isn't on the base branch yet (the PR is still open), and the branch is guaranteed to exist until `handleDone` merges and deletes it.
+  - **In the Linear "merged" comment** (`process-logo.ts`) — pin to the merge commit SHA returned by `mergePR`. The branch is already deleted by then, and a SHA-pinned URL freezes the preview at what actually landed. Falls back to the base-branch URL + cache-buster if GitHub didn't return a SHA.
 - **Merge strategy:** squash merges.
-- **Merge gating:** PRs are NOT auto-merged. They stay open until a human moves the Linear issue to **Done**, which fires the webhook → `handleDone` → merge. This is the human-approval step.
+- **Merge strategy details:** `mergePR(prNumber, branchName)` squash-merges and deletes the branch, retrying up to 4× with a 3s gap because GitHub computes mergeability asynchronously and a just-opened PR can briefly report as unmergeable.
+- **No merge gating:** every PR the agent opens is merged in the same run. Review happens after the fact via the comment-rerun loop. Don't reintroduce a "wait for Done" gate without the user asking — it was deliberately removed.
 
 ## Environment variables
 
@@ -120,6 +122,8 @@ Rules:
 - **Linear comment renders as `data:image/svg+xml;base64,...` text:** don't use data URIs in Linear comments — use a `raw.githubusercontent.com` URL.
 - **PR preview image 404s on a merged PR:** the PR body points at the deleted `logo/<slug>` branch. `github.ts` should be using the `master` URL now; double-check.
 - **Webhook fires twice for the same slug:** `webhook/route.ts` has a `processing` Set for dedup. Reuse it rather than adding your own.
+- **PR creation fails right after a rerun:** the regenerated SVG is probably byte-identical to what's already on the base branch, so the commit was a no-op and GitHub refuses a PR with no diff. `github.ts` deletes the throwaway branch and raises that explicitly.
+- **Issue stuck in "In Review" with a "merge failed" comment:** branch protection on the CDN repo is blocking the agent's merge (a required approving review, most likely). The PR is left open for a human.
 - **Vectorizer fails with "Image format not supported":** the source is probably an ICO or WebP that sharp can't convert. Covered — `vectorize.ts` catches and wraps as `ImageFetchError` so the next candidate is tried.
 - **SVG source still hits vectorizer:** should not — `process-logo.ts` short-circuits `.svg` candidates. If a logo ends in `.svg` but isn't valid SVG content, it falls back to vectorizer.
 - **Next.js build fails on Railway with `sharp` errors:** shouldn't, Railway's Linux runtime handles native deps. If this pops up, check the nixpacks output — a Node version mismatch is the usual cause.

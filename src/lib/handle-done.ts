@@ -1,6 +1,12 @@
 import { mergePRForSlug } from "./github";
 import { executeLinearTool } from "./composio";
 
+/**
+ * Backstop for the Done transition. The pipeline auto-merges its own PR and
+ * moves the issue to Done itself, so this normally finds nothing. It exists to
+ * catch a PR whose auto-merge failed and that a human then approved by moving
+ * the issue to Done.
+ */
 export async function handleDone(issueId: string, slug: string): Promise<void> {
   try {
     const prUrl = await mergePRForSlug(slug);

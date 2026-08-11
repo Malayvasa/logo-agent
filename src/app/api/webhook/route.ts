@@ -86,10 +86,18 @@ export async function POST(request: NextRequest) {
 
     const currentState = issueData?.state?.name?.toLowerCase();
 
-    // Handle "Done" — merge the PR and comment
+    // Handle "Done" — backstop only. The pipeline auto-merges its own PR and
+    // moves the issue here itself, so there's normally nothing left to merge;
+    // this catches a PR whose auto-merge failed and was fixed up by hand.
     if (currentState === "done") {
       const slug = deriveSlug(issueData.title, issueData.description);
-      console.log(`[webhook] Issue moved to Done, merging PR for ${slug}`);
+
+      if (processing.has(slug)) {
+        console.log(`[webhook] "${slug}" is mid-run, skipping Done backstop`);
+        return NextResponse.json({ status: "skipped", reason: "already processing" });
+      }
+
+      console.log(`[webhook] Issue moved to Done, checking for an unmerged PR for ${slug}`);
 
       handleDone(issueData.id, slug).catch((err) => {
         console.error(`[webhook] handleDone failed for ${slug}:`, err);
@@ -310,6 +318,13 @@ async function handleCommentEvent(commentData: any): Promise<NextResponse> {
   const slug = deriveSlug(issueTitle, issueDescription);
   const websiteUrl = extractUrl(issueDescription || "") || "https://unknown";
 
+  // Dedup matters more now that every run auto-merges: a duplicate webhook
+  // would otherwise land the same logo twice via two PRs.
+  if (processing.has(slug)) {
+    console.log(`[webhook] Slug "${slug}" already processing, skipping duplicate comment run`);
+    return NextResponse.json({ status: "skipped", reason: "already processing" });
+  }
+
   console.log(
     `[webhook] Comment-triggered rerun for ${slug} (${
       inlineSvg ? "inline SVG" : `${extracted!.source}, isSvg=${extracted!.isSvg}`
@@ -326,9 +341,14 @@ async function handleCommentEvent(commentData: any): Promise<NextResponse> {
       : { imageUrl: extracted!.url, imageUrlIsSvg: extracted!.isSvg }),
   };
 
-  processLogo(logoRequest).catch((err) => {
-    console.error(`[webhook] processLogo (comment) failed for ${slug}:`, err);
-  });
+  processing.add(slug);
+  processLogo(logoRequest)
+    .catch((err) => {
+      console.error(`[webhook] processLogo (comment) failed for ${slug}:`, err);
+    })
+    .finally(() => {
+      processing.delete(slug);
+    });
 
   return NextResponse.json({
     status: "processing",

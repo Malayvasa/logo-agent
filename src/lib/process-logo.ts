@@ -2,10 +2,16 @@ import type { LogoRequest } from "@/types";
 import { fetchFavicon } from "./fetch-favicon";
 import { vectorize, ImageFetchError } from "./vectorize";
 import { normalizeSvg } from "./normalize-svg";
-import { commitAndCreatePR } from "./github";
+import { commitAndCreatePR, mergePR } from "./github";
 import { executeLinearTool } from "./composio";
 import { fetchWithLinearAuth } from "./linear-fetch";
-import { linearInReviewStateId, repoOwner, repoName } from "./config";
+import {
+  linearInReviewStateId,
+  linearDoneStateId,
+  repoOwner,
+  repoName,
+  repoBranch,
+} from "./config";
 
 async function createComment(issueId: string, body: string): Promise<string | null> {
   try {
@@ -171,39 +177,70 @@ export async function processLogo(request: LogoRequest): Promise<string> {
     console.log(`[process-logo] Step 3: Normalizing SVG`);
     const normalizedSvg = normalizeSvg(rawSvg);
 
-    // Step 4: Commit and create PR
+    // Step 4: Commit and create PR — always a fresh branch, so a re-run
+    // triggered by a follow-up comment opens its own PR rather than amending
+    // the previous one.
     console.log(`[process-logo] Step 4: Creating PR on GitHub`);
-    const { prUrl } = await commitAndCreatePR(
+    const { prUrl, prNumber, branchName } = await commitAndCreatePR(
       slug,
       normalizedSvg,
       issueIdentifier
     );
 
-    // Step 5: Update comment with preview + open PR link.
-    // PR is left open intentionally — merge happens when the issue moves to
-    // "Done" (see handleDone). Pre-merge the file isn't on master yet, so
-    // point the preview at the branch (it exists until handleDone deletes it).
-    console.log(`[process-logo] Step 5: Updating Linear issue`);
-    const svgPreviewUrl = `https://raw.githubusercontent.com/${repoOwner()}/${repoName()}/logo/${slug}/src/assets/${slug}.svg?v=${Date.now()}`;
+    if (commentId) {
+      await updateComment(commentId, `**Logo Agent** processing **${slug}**\n\n✅ Vectorized to SVG\n✅ PR opened: ${prUrl}\n⏳ Merging...`);
+    }
+
+    // Step 5: Auto-merge. The PR isn't a review gate anymore — corrections
+    // come in as follow-up comments, each of which opens (and merges) a new PR.
+    console.log(`[process-logo] Step 5: Merging PR #${prNumber}`);
+    let mergeCommitSha = "";
+    let mergeError: string | null = null;
+    try {
+      mergeCommitSha = await mergePR(prNumber, branchName);
+    } catch (err) {
+      mergeError = err instanceof Error ? err.message : String(err);
+      console.error(`[process-logo] Auto-merge failed for ${slug}:`, err);
+    }
+
+    // Step 6: Comment the result. Post-merge the branch is gone, so pin the
+    // preview to the merge commit (falls back to the base branch when GitHub
+    // didn't hand back a SHA).
+    console.log(`[process-logo] Step 6: Updating Linear issue`);
+    const previewRef = mergeCommitSha || repoBranch();
+    const cacheBust = mergeCommitSha ? "" : `?v=${Date.now()}`;
+    const svgPreviewUrl = `https://raw.githubusercontent.com/${repoOwner()}/${repoName()}/${previewRef}/src/assets/${slug}.svg${cacheBust}`;
+
     if (commentId) {
       await updateComment(
         commentId,
-        `**Logo Agent** — ready for review 👀\n\n**PR:** ${prUrl}\n\n![${slug} logo](${svgPreviewUrl})\n\nMove this issue to **Done** to merge.`
+        mergeError
+          ? `**Logo Agent** — PR open, merge failed ❌\n\n**PR:** ${prUrl}\n\n**Error:** ${mergeError}\n\nMerge the PR manually, or comment a replacement image here to open a new one.`
+          : `**Logo Agent** — merged ✅\n\n**PR:** ${prUrl}\n\n![${slug} logo](${svgPreviewUrl})\n\nThe \`${slug}\` logo is live in the CDN. Not right? Comment a replacement image on this issue and the agent will open a new PR.`
       );
     }
 
-    // Step 6: Move issue to "In Review"
+    // Step 7: Move the issue on — Done once merged (if a Done state is
+    // configured), otherwise leave it in In Review for a human to pick up.
+    // Kept inside its own try: a missing state ID must not fail the run — the
+    // logo has already landed by this point.
     try {
+      const doneStateId = linearDoneStateId();
+      const merged = !mergeError && !!doneStateId;
       await executeLinearTool("LINEAR_UPDATE_ISSUE", {
         issueId: request.issueId,
-        stateId: linearInReviewStateId(),
+        stateId: merged ? doneStateId : linearInReviewStateId(),
       });
-      console.log(`[process-logo] Moved issue to In Review`);
+      console.log(`[process-logo] Moved issue to ${merged ? "Done" : "In Review"}`);
     } catch (err) {
       console.error(`[process-logo] Failed to update issue state:`, err);
     }
 
-    console.log(`[process-logo] PR opened, awaiting Done transition: ${prUrl}`);
+    console.log(
+      mergeError
+        ? `[process-logo] PR left open (merge failed): ${prUrl}`
+        : `[process-logo] PR merged: ${prUrl}`
+    );
     return prUrl;
   } catch (err) {
     // Update comment with error

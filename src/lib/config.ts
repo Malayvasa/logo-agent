@@ -24,6 +24,9 @@ export const githubConnectedAccount = () => required("GITHUB_CONNECTED_ACCOUNT")
 export const linearProjectId = () => required("LINEAR_LOGOS_PROJECT_ID");
 export const linearProjectName = () => process.env.LINEAR_PROJECT_NAME || "Logos";
 export const linearInReviewStateId = () => required("LINEAR_IN_REVIEW_STATE_ID");
+// Optional. When set, the agent moves the issue here after it auto-merges the
+// PR. Unset, merged issues are parked in "In Review" instead.
+export const linearDoneStateId = () => process.env.LINEAR_DONE_STATE_ID || null;
 export const linearTriageStateName = () => process.env.LINEAR_TRIAGE_STATE_NAME || "Triage";
 
 // Used by URL filters to recognize "the target repo" so we don't treat a PR
