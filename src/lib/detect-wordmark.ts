@@ -43,9 +43,19 @@ export async function detectWordmark(
   svg: Buffer
 ): Promise<WordmarkResult> {
   const { preview, aspectRatio } = await renderForModel(svg);
+  const { classification } = await classifyPreview(slug, preview, aiGatewayModel());
 
+  const flagged =
+    classification.kind === "wordmark" ||
+    classification.kind === "symbol_with_wordmark";
+
+  return { slug, flagged, aspectRatio, ...classification };
+}
+
+// Exposed separately so scripts can compare models on the same render.
+export async function classifyPreview(slug: string, preview: Buffer, model: string) {
   const result = await generateText({
-    model: aiGatewayModel(),
+    model,
     output: Output.object({ schema: classificationSchema }),
     messages: [
       {
@@ -62,14 +72,14 @@ export async function detectWordmark(
     throw new Error(`AI Gateway returned no classification for ${slug}`);
   }
 
-  const flagged =
-    result.output.kind === "wordmark" ||
-    result.output.kind === "symbol_with_wordmark";
-
-  return { slug, flagged, aspectRatio, ...result.output };
+  return {
+    classification: result.output,
+    usage: result.usage,
+    providerMetadata: result.providerMetadata,
+  };
 }
 
-async function renderForModel(
+export async function renderForModel(
   svg: Buffer
 ): Promise<{ preview: Buffer; aspectRatio: number }> {
   const icon = await sharp(svg, { density: 300 })
