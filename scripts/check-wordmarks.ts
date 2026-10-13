@@ -21,7 +21,6 @@ import { detectWordmark, type WordmarkResult } from "../src/lib/detect-wordmark"
 // Runs daily as a Railway cron service. Clean runs post nothing.
 
 const CONCURRENCY = 6;
-const SLACK_LINES_PER_MESSAGE = 40;
 
 interface Args {
   hours: number;
@@ -186,32 +185,49 @@ async function postToSlack(
   flagged: WordmarkResult[],
   failures: { slug: string; error: string }[]
 ) {
-  const lines = flagged.map((r) => {
-    const text = r.textSeen ? ` “${r.textSeen}”` : "";
-    return `• [${r.slug}](${blobUrl(r.slug)}): ${KIND_LABEL[r.kind]}${text} (${r.confidence} confidence)`;
-  });
+  // Parent message lists every flagged slug; the thread under it carries one
+  // reply per logo with its render, so the channel stays scannable.
+  const lines = flagged.map((r) => `• [${r.slug}](${blobUrl(r.slug)})`);
   if (failures.length) {
-    lines.push(`Couldn't check: ${failures.map((f) => f.slug).join(", ")}`);
+    lines.push(`\nCouldn't check: ${failures.map((f) => f.slug).join(", ")}`);
   }
 
   const header = flagged.length
-    ? `**Logo wordmark check:** ${flagged.length} logo(s) contain a wordmark (checked ${scope}).`
+    ? `**Logo wordmark check:** ${flagged.length} logo(s) contain a wordmark (checked ${scope}). Previews in thread.`
     : `**Logo wordmark check:** no wordmarks found, but some logos couldn't be checked (${scope}).`;
 
-  for (let i = 0; i < lines.length; i += SLACK_LINES_PER_MESSAGE) {
-    const chunk = lines.slice(i, i + SLACK_LINES_PER_MESSAGE).join("\n");
+  const parent = await executeTool(
+    "SLACK_SEND_MESSAGE",
+    {
+      channel: slackAlertChannel(),
+      markdown_text: `${header}\n\n${lines.join("\n")}`,
+      unfurl_links: false,
+    },
+    slackConnectedAccount(),
+    slackUserId()
+  );
+  const threadTs: string | undefined = parent.data?.ts ?? parent.data?.message?.ts;
+  if (!threadTs) {
+    throw new Error(`Slack message posted but no ts returned: ${JSON.stringify(parent.data).slice(0, 300)}`);
+  }
+
+  // Sequential so the thread reads in the same order as the parent list.
+  for (const r of flagged) {
+    const text = r.textSeen ? ` “${r.textSeen}”` : "";
     await executeTool(
-      "SLACK_SEND_MESSAGE",
+      "SLACK_UPLOAD_OR_CREATE_A_FILE_IN_SLACK",
       {
-        channel: slackAlertChannel(),
-        markdown_text: i === 0 ? `${header}\n\n${chunk}` : chunk,
-        unfurl_links: false,
+        channels: slackAlertChannel(),
+        thread_ts: threadTs,
+        file: new File([new Uint8Array(r.preview)], `${r.slug}.png`, { type: "image/png" }),
+        title: r.slug,
+        initial_comment: `*${r.slug}*: ${KIND_LABEL[r.kind]}${text} (${r.confidence} confidence)`,
       },
       slackConnectedAccount(),
       slackUserId()
     );
   }
-  console.log(`[wordmarks] Posted to Slack (${slackAlertChannel()})`);
+  console.log(`[wordmarks] Posted to Slack (${slackAlertChannel()}) with ${flagged.length} thread image(s)`);
 }
 
 main().catch((err) => {

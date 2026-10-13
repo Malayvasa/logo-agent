@@ -26,6 +26,8 @@ export interface WordmarkResult extends WordmarkClassification {
   // Width / height of the visible content. Wordmarks run wide, so this is a
   // useful sanity check next to the model's call.
   aspectRatio: number;
+  // The light/dark render the model saw, reused as the Slack thread image.
+  preview: Buffer;
 }
 
 const PROMPT = [
@@ -49,7 +51,7 @@ export async function detectWordmark(
     classification.kind === "wordmark" ||
     classification.kind === "symbol_with_wordmark";
 
-  return { slug, flagged, aspectRatio, ...classification };
+  return { slug, flagged, aspectRatio, preview, ...classification };
 }
 
 // Exposed separately so scripts can compare models on the same render.
