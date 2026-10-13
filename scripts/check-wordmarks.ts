@@ -95,8 +95,8 @@ async function classifyAll(slugs: string[]) {
     while (next < slugs.length) {
       const slug = slugs[next++];
       try {
-        const svg = await fetchSvg(slug);
-        results.push(await detectWordmark(slug, svg));
+        const [svg, darkSvg] = await Promise.all([fetchSvg(slug), fetchSvg(`${slug}-dark`, true)]);
+        results.push(await detectWordmark(slug, svg, darkSvg ?? undefined));
       } catch (err) {
         failures.push({ slug, error: err instanceof Error ? err.message : String(err) });
       }
@@ -114,11 +114,11 @@ async function listAllSlugs(): Promise<string[]> {
   const tree = await githubJson<{ tree: { path: string; type: string }[] }>(
     `/git/trees/${repoBranch()}?recursive=1`
   );
-  return tree.tree
+  const slugs = tree.tree
     .filter((item) => item.type === "blob")
     .map((item) => slugFromPath(item.path))
-    .filter((slug): slug is string => slug !== null)
-    .sort();
+    .filter((slug): slug is string => slug !== null);
+  return [...new Set(slugs)].sort();
 }
 
 async function listChangedSlugs(hours: number): Promise<string[]> {
@@ -140,13 +140,18 @@ async function listChangedSlugs(hours: number): Promise<string[]> {
   return [...slugs].sort();
 }
 
+// `<slug>-dark.svg` is the dark-theme variant of `<slug>.svg`, so it maps to
+// the base slug: a change to either re-checks the logo with both renders.
 function slugFromPath(path: string): string | null {
-  return path.match(/^src\/assets\/([^/]+)\.svg$/)?.[1] ?? null;
+  return path.match(/^src\/assets\/([^/]+?)(?:-dark)?\.svg$/)?.[1] ?? null;
 }
 
-async function fetchSvg(slug: string): Promise<Buffer> {
+async function fetchSvg(slug: string): Promise<Buffer>;
+async function fetchSvg(slug: string, optional: true): Promise<Buffer | null>;
+async function fetchSvg(slug: string, optional = false): Promise<Buffer | null> {
   const res = await fetch(rawUrl(slug));
-  if (!res.ok) throw new Error(`Fetching SVG returned ${res.status}`);
+  if (optional && res.status === 404) return null;
+  if (!res.ok) throw new Error(`Fetching ${slug}.svg returned ${res.status}`);
   return Buffer.from(await res.arrayBuffer());
 }
 

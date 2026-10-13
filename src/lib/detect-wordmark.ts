@@ -31,7 +31,7 @@ export interface WordmarkResult extends WordmarkClassification {
 }
 
 const PROMPT = [
-  `This is the logo for "{slug}", rendered twice: on a white background (left) and a dark background (right), so light and dark artwork are both visible.`,
+  `This is the logo for "{slug}", rendered twice: on a white background (left) and a dark background (right), so light and dark artwork are both visible. The dark render may use the brand's dark-theme variant.`,
   `Classify what the logo contains:`,
   `- "symbol": a graphic mark with no readable text.`,
   `- "monogram": the mark is one or two letters (e.g. a stylised "f" or "HP"), with no other words.`,
@@ -42,9 +42,10 @@ const PROMPT = [
 
 export async function detectWordmark(
   slug: string,
-  svg: Buffer
+  svg: Buffer,
+  darkSvg?: Buffer
 ): Promise<WordmarkResult> {
-  const { preview, aspectRatio } = await renderForModel(svg);
+  const { preview, aspectRatio } = await renderForModel(svg, darkSvg);
   const { classification } = await classifyPreview(slug, preview, aiGatewayModel());
 
   const flagged =
@@ -81,20 +82,32 @@ export async function classifyPreview(slug: string, preview: Buffer, model: stri
   };
 }
 
+// The dark tile uses the logo's `-dark` variant when the CDN has one, matching
+// what `/api/:slug?theme=dark` serves; otherwise the main asset on dark.
 export async function renderForModel(
-  svg: Buffer
+  svg: Buffer,
+  darkSvg?: Buffer
 ): Promise<{ preview: Buffer; aspectRatio: number }> {
-  const icon = await sharp(svg, { density: 300 })
-    .resize(RENDER_SIZE, RENDER_SIZE, {
-      fit: "contain",
-      background: { r: 0, g: 0, b: 0, alpha: 0 },
-    })
-    .png()
-    .toBuffer();
+  const rasterize = (source: Buffer) =>
+    sharp(source, { density: 300 })
+      .resize(RENDER_SIZE, RENDER_SIZE, {
+        fit: "contain",
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      })
+      .png()
+      .toBuffer();
 
-  const tile = (background: string) =>
-    sharp(icon).flatten({ background }).png().toBuffer();
-  const [light, dark] = await Promise.all([tile("#ffffff"), tile("#1f1f1f")]);
+  const [icon, darkIcon] = await Promise.all([
+    rasterize(svg),
+    darkSvg ? rasterize(darkSvg) : null,
+  ]);
+
+  const tile = (source: Buffer, background: string) =>
+    sharp(source).flatten({ background }).png().toBuffer();
+  const [light, dark] = await Promise.all([
+    tile(icon, "#ffffff"),
+    tile(darkIcon ?? icon, "#1f1f1f"),
+  ]);
 
   const preview = await sharp({
     create: {
