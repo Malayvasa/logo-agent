@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { executeTool } from "../src/lib/composio";
 import {
+  logoApiUrl,
   repoBranch,
   repoName,
   repoOwner,
@@ -21,7 +22,6 @@ import { detectWordmark, type WordmarkResult } from "../src/lib/detect-wordmark"
 // Runs daily as a Railway cron service. Clean runs post nothing.
 
 const CONCURRENCY = 6;
-const SLACK_LINES_PER_MESSAGE = 40;
 
 interface Args {
   hours: number;
@@ -96,8 +96,8 @@ async function classifyAll(slugs: string[]) {
     while (next < slugs.length) {
       const slug = slugs[next++];
       try {
-        const svg = await fetchSvg(slug);
-        results.push(await detectWordmark(slug, svg));
+        const [svg, darkSvg] = await Promise.all([fetchSvg(slug), fetchDarkSvg(slug)]);
+        results.push(await detectWordmark(slug, svg, darkSvg ?? undefined));
       } catch (err) {
         failures.push({ slug, error: err instanceof Error ? err.message : String(err) });
       }
@@ -115,11 +115,11 @@ async function listAllSlugs(): Promise<string[]> {
   const tree = await githubJson<{ tree: { path: string; type: string }[] }>(
     `/git/trees/${repoBranch()}?recursive=1`
   );
-  return tree.tree
+  const slugs = tree.tree
     .filter((item) => item.type === "blob")
     .map((item) => slugFromPath(item.path))
-    .filter((slug): slug is string => slug !== null)
-    .sort();
+    .filter((slug): slug is string => slug !== null);
+  return [...new Set(slugs)].sort();
 }
 
 async function listChangedSlugs(hours: number): Promise<string[]> {
@@ -141,14 +141,29 @@ async function listChangedSlugs(hours: number): Promise<string[]> {
   return [...slugs].sort();
 }
 
+// `<slug>-dark.svg` is the dark-theme variant of `<slug>.svg`, so it maps to
+// the base slug: a change to either re-checks the logo with both renders.
 function slugFromPath(path: string): string | null {
-  return path.match(/^src\/assets\/([^/]+)\.svg$/)?.[1] ?? null;
+  return path.match(/^src\/assets\/([^/]+?)(?:-dark)?\.svg$/)?.[1] ?? null;
 }
 
 async function fetchSvg(slug: string): Promise<Buffer> {
   const res = await fetch(rawUrl(slug));
-  if (!res.ok) throw new Error(`Fetching SVG returned ${res.status}`);
+  if (!res.ok) throw new Error(`Fetching ${slug}.svg returned ${res.status}`);
   return Buffer.from(await res.arrayBuffer());
+}
+
+// The live CDN API owns the dark-theme rules (a `-dark` variant if one exists,
+// else single-colour dark logos recoloured to white), so ask it rather than
+// re-implementing them. On failure the preview falls back to the main asset.
+async function fetchDarkSvg(slug: string): Promise<Buffer | null> {
+  try {
+    const res = await fetch(`${logoApiUrl()}/api/${encodeURIComponent(slug)}?theme=dark`);
+    if (!res.ok) return null;
+    return Buffer.from(await res.arrayBuffer());
+  } catch {
+    return null;
+  }
 }
 
 function rawUrl(slug: string): string {
@@ -186,32 +201,49 @@ async function postToSlack(
   flagged: WordmarkResult[],
   failures: { slug: string; error: string }[]
 ) {
-  const lines = flagged.map((r) => {
-    const text = r.textSeen ? ` “${r.textSeen}”` : "";
-    return `• [${r.slug}](${blobUrl(r.slug)}): ${KIND_LABEL[r.kind]}${text} (${r.confidence} confidence)`;
-  });
+  // Parent message lists every flagged slug; the thread under it carries one
+  // reply per logo with its render, so the channel stays scannable.
+  const lines = flagged.map((r) => `• [${r.slug}](${blobUrl(r.slug)})`);
   if (failures.length) {
-    lines.push(`Couldn't check: ${failures.map((f) => f.slug).join(", ")}`);
+    lines.push(`\nCouldn't check: ${failures.map((f) => f.slug).join(", ")}`);
   }
 
   const header = flagged.length
-    ? `**Logo wordmark check:** ${flagged.length} logo(s) contain a wordmark (checked ${scope}).`
+    ? `**Logo wordmark check:** ${flagged.length} logo(s) contain a wordmark (checked ${scope}). Previews in thread.`
     : `**Logo wordmark check:** no wordmarks found, but some logos couldn't be checked (${scope}).`;
 
-  for (let i = 0; i < lines.length; i += SLACK_LINES_PER_MESSAGE) {
-    const chunk = lines.slice(i, i + SLACK_LINES_PER_MESSAGE).join("\n");
+  const parent = await executeTool(
+    "SLACK_SEND_MESSAGE",
+    {
+      channel: slackAlertChannel(),
+      markdown_text: `${header}\n\n${lines.join("\n")}`,
+      unfurl_links: false,
+    },
+    slackConnectedAccount(),
+    slackUserId()
+  );
+  const threadTs: string | undefined = parent.data?.ts ?? parent.data?.message?.ts;
+  if (!threadTs) {
+    throw new Error(`Slack message posted but no ts returned: ${JSON.stringify(parent.data).slice(0, 300)}`);
+  }
+
+  // Sequential so the thread reads in the same order as the parent list.
+  for (const r of flagged) {
+    const text = r.textSeen ? ` “${r.textSeen}”` : "";
     await executeTool(
-      "SLACK_SEND_MESSAGE",
+      "SLACK_UPLOAD_OR_CREATE_A_FILE_IN_SLACK",
       {
-        channel: slackAlertChannel(),
-        markdown_text: i === 0 ? `${header}\n\n${chunk}` : chunk,
-        unfurl_links: false,
+        channels: slackAlertChannel(),
+        thread_ts: threadTs,
+        file: new File([new Uint8Array(r.preview)], `${r.slug}.png`, { type: "image/png" }),
+        title: r.slug,
+        initial_comment: `*${r.slug}*: ${KIND_LABEL[r.kind]}${text} (${r.confidence} confidence)`,
       },
       slackConnectedAccount(),
       slackUserId()
     );
   }
-  console.log(`[wordmarks] Posted to Slack (${slackAlertChannel()})`);
+  console.log(`[wordmarks] Posted to Slack (${slackAlertChannel()}) with ${flagged.length} thread image(s)`);
 }
 
 main().catch((err) => {

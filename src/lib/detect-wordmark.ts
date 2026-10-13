@@ -26,10 +26,12 @@ export interface WordmarkResult extends WordmarkClassification {
   // Width / height of the visible content. Wordmarks run wide, so this is a
   // useful sanity check next to the model's call.
   aspectRatio: number;
+  // The light/dark render the model saw, reused as the Slack thread image.
+  preview: Buffer;
 }
 
 const PROMPT = [
-  `This is the logo for "{slug}", rendered twice: on a white background (left) and a dark background (right), so light and dark artwork are both visible.`,
+  `This is the logo for "{slug}", rendered twice: on a white background (left) and a dark background (right), so light and dark artwork are both visible. The dark render shows the dark-theme version of the logo, which may be recoloured.`,
   `Classify what the logo contains:`,
   `- "symbol": a graphic mark with no readable text.`,
   `- "monogram": the mark is one or two letters (e.g. a stylised "f" or "HP"), with no other words.`,
@@ -40,12 +42,23 @@ const PROMPT = [
 
 export async function detectWordmark(
   slug: string,
-  svg: Buffer
+  svg: Buffer,
+  darkSvg?: Buffer
 ): Promise<WordmarkResult> {
-  const { preview, aspectRatio } = await renderForModel(svg);
+  const { preview, aspectRatio } = await renderForModel(svg, darkSvg);
+  const { classification } = await classifyPreview(slug, preview, aiGatewayModel());
 
+  const flagged =
+    classification.kind === "wordmark" ||
+    classification.kind === "symbol_with_wordmark";
+
+  return { slug, flagged, aspectRatio, preview, ...classification };
+}
+
+// Exposed separately so scripts can compare models on the same render.
+export async function classifyPreview(slug: string, preview: Buffer, model: string) {
   const result = await generateText({
-    model: aiGatewayModel(),
+    model,
     output: Output.object({ schema: classificationSchema }),
     messages: [
       {
@@ -62,27 +75,39 @@ export async function detectWordmark(
     throw new Error(`AI Gateway returned no classification for ${slug}`);
   }
 
-  const flagged =
-    result.output.kind === "wordmark" ||
-    result.output.kind === "symbol_with_wordmark";
-
-  return { slug, flagged, aspectRatio, ...result.output };
+  return {
+    classification: result.output,
+    usage: result.usage,
+    providerMetadata: result.providerMetadata,
+  };
 }
 
-async function renderForModel(
-  svg: Buffer
+// The dark tile uses `darkSvg` (what the CDN serves for `?theme=dark`) when
+// given; otherwise the main asset on dark.
+export async function renderForModel(
+  svg: Buffer,
+  darkSvg?: Buffer
 ): Promise<{ preview: Buffer; aspectRatio: number }> {
-  const icon = await sharp(svg, { density: 300 })
-    .resize(RENDER_SIZE, RENDER_SIZE, {
-      fit: "contain",
-      background: { r: 0, g: 0, b: 0, alpha: 0 },
-    })
-    .png()
-    .toBuffer();
+  const rasterize = (source: Buffer) =>
+    sharp(source, { density: 300 })
+      .resize(RENDER_SIZE, RENDER_SIZE, {
+        fit: "contain",
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      })
+      .png()
+      .toBuffer();
 
-  const tile = (background: string) =>
-    sharp(icon).flatten({ background }).png().toBuffer();
-  const [light, dark] = await Promise.all([tile("#ffffff"), tile("#1f1f1f")]);
+  const [icon, darkIcon] = await Promise.all([
+    rasterize(svg),
+    darkSvg ? rasterize(darkSvg) : null,
+  ]);
+
+  const tile = (source: Buffer, background: string) =>
+    sharp(source).flatten({ background }).png().toBuffer();
+  const [light, dark] = await Promise.all([
+    tile(icon, "#ffffff"),
+    tile(darkIcon ?? icon, "#1f1f1f"),
+  ]);
 
   const preview = await sharp({
     create: {
