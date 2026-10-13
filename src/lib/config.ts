@@ -29,6 +29,14 @@ export const linearInReviewStateId = () => required("LINEAR_IN_REVIEW_STATE_ID")
 export const linearDoneStateId = () => process.env.LINEAR_DONE_STATE_ID || null;
 export const linearTriageStateName = () => process.env.LINEAR_TRIAGE_STATE_NAME || "Triage";
 
+// Wordmark check (scripts/check-wordmarks.ts). The model is called through
+// Vercel AI Gateway, which reads AI_GATEWAY_API_KEY itself.
+export const aiGatewayModel = () =>
+  process.env.AI_GATEWAY_MODEL || "openai/gpt-4.1";
+export const slackAlertChannel = () => required("SLACK_ALERT_CHANNEL");
+export const slackConnectedAccount = () => required("SLACK_CONNECTED_ACCOUNT");
+export const slackUserId = () => process.env.SLACK_USER_ID || githubUserId();
+
 // Used by URL filters to recognize "the target repo" so we don't treat a PR
 // link pasted in an issue description as the source website URL.
 export const repoUrlFragment = () => `github.com/${repoOwner()}/${repoName()}`;
