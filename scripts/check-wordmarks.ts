@@ -19,7 +19,8 @@ import { detectWordmark, type WordmarkResult } from "../src/lib/detect-wordmark"
 //   npx tsx scripts/check-wordmarks.ts --slugs a,b     # specific logos
 //   add --dry-run to print results without posting to Slack
 //
-// Runs daily as a Railway cron service. Clean runs post nothing.
+// Runs daily as a Railway cron service and posts an overview of what was
+// added, updated and flagged. Days with no logo changes post nothing.
 
 const CONCURRENCY = 6;
 
@@ -49,11 +50,14 @@ function parseArgs(argv: string[]): Args {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
 
+  // Daily mode knows how each logo changed, so it posts an overview; --all and
+  // --slugs only post what got flagged.
+  const changes = args.slugs.length || args.all ? null : await listChanges(args.hours);
   const slugs = args.slugs.length
     ? args.slugs
     : args.all
       ? await listAllSlugs()
-      : await listChangedSlugs(args.hours);
+      : [...changes!.added, ...changes!.updated].sort();
 
   const scope = args.slugs.length
     ? `${slugs.length} requested logo(s)`
@@ -62,7 +66,7 @@ async function main() {
       : `${slugs.length} logo(s) added or changed in the last ${args.hours}h`;
   console.log(`[wordmarks] Checking ${scope}`);
 
-  if (slugs.length === 0) return;
+  if (slugs.length === 0 && !changes?.removed.length) return;
 
   const { results, failures } = await classifyAll(slugs);
   const flagged = results.filter((r) => r.flagged);
@@ -79,12 +83,16 @@ async function main() {
     `[wordmarks] Done: ${flagged.length} flagged, ${results.length - flagged.length} clean, ${failures.length} failed`
   );
 
-  if (flagged.length === 0 && failures.length === 0) return;
+  if (!changes && flagged.length === 0 && failures.length === 0) return;
   if (args.dryRun) {
     console.log("[wordmarks] --dry-run: not posting to Slack");
+    if (changes) console.log(overviewText(changes, args.hours, flagged, failures));
     return;
   }
-  await postToSlack(scope, flagged, failures);
+  const summary = changes
+    ? overviewText(changes, args.hours, flagged, failures)
+    : flaggedText(scope, flagged, failures);
+  await postToSlack(summary, flagged);
 }
 
 async function classifyAll(slugs: string[]) {
@@ -122,23 +130,41 @@ async function listAllSlugs(): Promise<string[]> {
   return [...new Set(slugs)].sort();
 }
 
-async function listChangedSlugs(hours: number): Promise<string[]> {
+interface Changes {
+  added: string[];
+  updated: string[];
+  removed: string[];
+}
+
+async function listChanges(hours: number): Promise<Changes> {
   const since = new Date(Date.now() - hours * 3600_000).toISOString();
+  // Newest first, so the first status seen for a logo is its latest.
   const commits = await githubJson<{ sha: string }[]>(
     `/commits?sha=${repoBranch()}&path=src/assets&since=${since}&per_page=100`
   );
 
-  const slugs = new Set<string>();
+  const latest = new Map<string, string>();
+  const addedInWindow = new Set<string>();
   for (const { sha } of commits) {
     const commit = await githubJson<{ files?: { filename: string; status: string }[] }>(
       `/commits/${sha}`
     );
     for (const file of commit.files || []) {
       const slug = slugFromPath(file.filename);
-      if (slug && file.status !== "removed") slugs.add(slug);
+      if (!slug) continue;
+      const isMainAsset = !file.filename.endsWith("-dark.svg");
+      if (!latest.has(slug)) latest.set(slug, isMainAsset ? file.status : "modified");
+      if (isMainAsset && file.status === "added") addedInWindow.add(slug);
     }
   }
-  return [...slugs].sort();
+
+  const changes: Changes = { added: [], updated: [], removed: [] };
+  for (const [slug, status] of [...latest].sort(([a], [b]) => a.localeCompare(b))) {
+    if (status === "removed") changes.removed.push(slug);
+    else if (addedInWindow.has(slug)) changes.added.push(slug);
+    else changes.updated.push(slug);
+  }
+  return changes;
 }
 
 // `<slug>-dark.svg` is the dark-theme variant of `<slug>.svg`, so it maps to
@@ -196,27 +222,57 @@ const KIND_LABEL: Record<WordmarkResult["kind"], string> = {
   symbol_with_wordmark: "symbol + wordmark",
 };
 
-async function postToSlack(
+function logoLinks(slugs: string[]): string {
+  return slugs.map((slug) => `[${slug}](${blobUrl(slug)})`).join(", ");
+}
+
+function flaggedSection(flagged: WordmarkResult[], failures: { slug: string; error: string }[]): string {
+  const lines = [
+    flagged.length
+      ? `**Flagged for wordmarks (${flagged.length}):** ${logoLinks(flagged.map((r) => r.slug))}. Previews in thread.`
+      : "**Flagged for wordmarks:** none.",
+  ];
+  if (failures.length) {
+    lines.push(`**Couldn't check (${failures.length}):** ${failures.map((f) => f.slug).join(", ")}`);
+  }
+  return lines.join("\n");
+}
+
+function overviewText(
+  changes: Changes,
+  hours: number,
+  flagged: WordmarkResult[],
+  failures: { slug: string; error: string }[]
+): string {
+  const counts = [
+    `${changes.added.length} added`,
+    `${changes.updated.length} updated`,
+    ...(changes.removed.length ? [`${changes.removed.length} removed`] : []),
+  ].join(", ");
+  const lines = [`**Logo CDN update:** ${counts} in the last ${hours}h.`, ""];
+  if (changes.added.length) lines.push(`**Added (${changes.added.length}):** ${logoLinks(changes.added)}`);
+  if (changes.updated.length) lines.push(`**Updated (${changes.updated.length}):** ${logoLinks(changes.updated)}`);
+  if (changes.removed.length) lines.push(`**Removed (${changes.removed.length}):** ${changes.removed.join(", ")}`);
+  lines.push("", flaggedSection(flagged, failures));
+  return lines.join("\n");
+}
+
+function flaggedText(
   scope: string,
   flagged: WordmarkResult[],
   failures: { slug: string; error: string }[]
-) {
-  // Parent message lists every flagged slug; the thread under it carries one
-  // reply per logo with its render, so the channel stays scannable.
-  const lines = flagged.map((r) => `• [${r.slug}](${blobUrl(r.slug)})`);
-  if (failures.length) {
-    lines.push(`\nCouldn't check: ${failures.map((f) => f.slug).join(", ")}`);
-  }
+): string {
+  return `**Logo wordmark check** (checked ${scope})\n\n${flaggedSection(flagged, failures)}`;
+}
 
-  const header = flagged.length
-    ? `**Logo wordmark check:** ${flagged.length} logo(s) contain a wordmark (checked ${scope}). Previews in thread.`
-    : `**Logo wordmark check:** no wordmarks found, but some logos couldn't be checked (${scope}).`;
-
+// The main message carries the summary; the thread under it carries one reply
+// per flagged logo with its render, so the channel stays scannable.
+async function postToSlack(summary: string, flagged: WordmarkResult[]) {
   const parent = await executeTool(
     "SLACK_SEND_MESSAGE",
     {
       channel: slackAlertChannel(),
-      markdown_text: `${header}\n\n${lines.join("\n")}`,
+      markdown_text: summary,
       unfurl_links: false,
     },
     slackConnectedAccount(),
@@ -227,7 +283,7 @@ async function postToSlack(
     throw new Error(`Slack message posted but no ts returned: ${JSON.stringify(parent.data).slice(0, 300)}`);
   }
 
-  // Sequential so the thread reads in the same order as the parent list.
+  // Sequential so the thread reads in the same order as the flagged list.
   for (const r of flagged) {
     const text = r.textSeen ? ` “${r.textSeen}”` : "";
     await executeTool(
