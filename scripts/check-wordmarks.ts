@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { executeTool } from "../src/lib/composio";
 import {
+  logoApiUrl,
   repoBranch,
   repoName,
   repoOwner,
@@ -95,7 +96,7 @@ async function classifyAll(slugs: string[]) {
     while (next < slugs.length) {
       const slug = slugs[next++];
       try {
-        const [svg, darkSvg] = await Promise.all([fetchSvg(slug), fetchSvg(`${slug}-dark`, true)]);
+        const [svg, darkSvg] = await Promise.all([fetchSvg(slug), fetchDarkSvg(slug)]);
         results.push(await detectWordmark(slug, svg, darkSvg ?? undefined));
       } catch (err) {
         failures.push({ slug, error: err instanceof Error ? err.message : String(err) });
@@ -146,13 +147,23 @@ function slugFromPath(path: string): string | null {
   return path.match(/^src\/assets\/([^/]+?)(?:-dark)?\.svg$/)?.[1] ?? null;
 }
 
-async function fetchSvg(slug: string): Promise<Buffer>;
-async function fetchSvg(slug: string, optional: true): Promise<Buffer | null>;
-async function fetchSvg(slug: string, optional = false): Promise<Buffer | null> {
+async function fetchSvg(slug: string): Promise<Buffer> {
   const res = await fetch(rawUrl(slug));
-  if (optional && res.status === 404) return null;
   if (!res.ok) throw new Error(`Fetching ${slug}.svg returned ${res.status}`);
   return Buffer.from(await res.arrayBuffer());
+}
+
+// The live CDN API owns the dark-theme rules (a `-dark` variant if one exists,
+// else single-colour dark logos recoloured to white), so ask it rather than
+// re-implementing them. On failure the preview falls back to the main asset.
+async function fetchDarkSvg(slug: string): Promise<Buffer | null> {
+  try {
+    const res = await fetch(`${logoApiUrl()}/api/${encodeURIComponent(slug)}?theme=dark`);
+    if (!res.ok) return null;
+    return Buffer.from(await res.arrayBuffer());
+  } catch {
+    return null;
+  }
 }
 
 function rawUrl(slug: string): string {

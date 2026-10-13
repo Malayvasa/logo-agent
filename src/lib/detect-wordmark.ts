@@ -31,7 +31,7 @@ export interface WordmarkResult extends WordmarkClassification {
 }
 
 const PROMPT = [
-  `This is the logo for "{slug}", rendered twice: on a white background (left) and a dark background (right), so light and dark artwork are both visible. The dark render may use the brand's dark-theme variant.`,
+  `This is the logo for "{slug}", rendered twice: on a white background (left) and a dark background (right), so light and dark artwork are both visible. The dark render shows the dark-theme version of the logo, which may be recoloured.`,
   `Classify what the logo contains:`,
   `- "symbol": a graphic mark with no readable text.`,
   `- "monogram": the mark is one or two letters (e.g. a stylised "f" or "HP"), with no other words.`,
@@ -82,8 +82,8 @@ export async function classifyPreview(slug: string, preview: Buffer, model: stri
   };
 }
 
-// The dark tile uses the logo's `-dark` variant when the CDN has one, matching
-// what `/api/:slug?theme=dark` serves; otherwise the main asset on dark.
+// The dark tile uses `darkSvg` (what the CDN serves for `?theme=dark`) when
+// given; otherwise the main asset on dark.
 export async function renderForModel(
   svg: Buffer,
   darkSvg?: Buffer
