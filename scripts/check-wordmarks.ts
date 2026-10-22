@@ -11,7 +11,9 @@ import {
 } from "../src/lib/config";
 import { detectWordmark, type WordmarkResult } from "../src/lib/detect-wordmark";
 
-// Flags logos in the CDN that contain a wordmark and posts them to Slack.
+// Flags logos in the CDN that ship a symbol together with a wordmark, or whose
+// text names a different brand, and posts them to Slack. Wordmark-only logos
+// of the right brand are left alone.
 //
 //   npx tsx scripts/check-wordmarks.ts                 # logos added/changed in the last 24h
 //   npx tsx scripts/check-wordmarks.ts --hours 72      # ...in the last 72h
@@ -73,7 +75,7 @@ async function main() {
 
   for (const r of flagged) {
     console.log(
-      `[wordmarks] FLAGGED ${r.slug}: ${r.kind} (${r.confidence}) "${r.textSeen}" ratio=${r.aspectRatio} — ${r.reason}`
+      `[wordmarks] FLAGGED ${r.slug}: ${r.kind}${r.textNamesBrand ? "" : " WRONG-BRAND"} (${r.confidence}) "${r.textSeen}" ratio=${r.aspectRatio} — ${r.reason}`
     );
   }
   for (const f of failures) {
@@ -227,8 +229,8 @@ function logoLinks(slugs: string[]): string {
 function flaggedSection(flagged: WordmarkResult[], failures: { slug: string; error: string }[]): string {
   const lines = [
     flagged.length
-      ? `**Flagged for wordmarks (${flagged.length}):** ${logoLinks(flagged.map((r) => r.slug))}. Previews in thread.`
-      : "**Flagged for wordmarks:** none.",
+      ? `**Flagged (${flagged.length}):** ${logoLinks(flagged.map((r) => r.slug))}. Previews in thread.`
+      : "**Flagged:** none.",
   ];
   if (failures.length) {
     lines.push(`**Couldn't check (${failures.length}):** ${failures.map((f) => f.slug).join(", ")}`);
@@ -284,6 +286,7 @@ async function postToSlack(summary: string, flagged: WordmarkResult[]) {
   // Sequential so the thread reads in the same order as the flagged list.
   for (const r of flagged) {
     const text = r.textSeen ? ` “${r.textSeen}”` : "";
+    const verdict = r.textNamesBrand ? KIND_LABEL[r.kind] : "possibly the wrong logo";
     await executeTool(
       "SLACK_UPLOAD_OR_CREATE_A_FILE_IN_SLACK",
       {
@@ -291,7 +294,7 @@ async function postToSlack(summary: string, flagged: WordmarkResult[]) {
         thread_ts: threadTs,
         file: new File([new Uint8Array(r.preview)], `${r.slug}.png`, { type: "image/png" }),
         title: r.slug,
-        initial_comment: `*${r.slug}*: ${KIND_LABEL[r.kind]}${text} (${r.confidence} confidence)`,
+        initial_comment: `*${r.slug}*: ${verdict}${text} (${r.confidence} confidence)`,
       },
       slackConnectedAccount(),
       slackUserId()
