@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { getComposio, executeLinearTool } from "@/lib/composio";
 import { processLogo } from "@/lib/process-logo";
 import { handleDone } from "@/lib/handle-done";
@@ -8,6 +8,10 @@ import type { LinearIssuePayload, LogoRequest } from "@/types";
 
 // Dedup: track slugs currently being processed to avoid duplicate runs from rapid webhook fires
 const processing = new Set<string>();
+
+// Background work runs in after() so serverless hosts keep the function alive
+// past the response. One logo run (fetch, vectorize, PR, merge) fits well inside this.
+export const maxDuration = 300;
 
 export async function POST(request: NextRequest) {
   try {
@@ -99,9 +103,11 @@ export async function POST(request: NextRequest) {
 
       console.log(`[webhook] Issue moved to Done, checking for an unmerged PR for ${slug}`);
 
-      handleDone(issueData.id, slug).catch((err) => {
-        console.error(`[webhook] handleDone failed for ${slug}:`, err);
-      });
+      after(() =>
+        handleDone(issueData.id, slug).catch((err) => {
+          console.error(`[webhook] handleDone failed for ${slug}:`, err);
+        })
+      );
 
       return NextResponse.json({ status: "merging", slug });
     }
@@ -138,12 +144,14 @@ export async function POST(request: NextRequest) {
     if (issueData.title === "[Logo Request] submission") {
       const newTitle = `[${slug}] Add logo`;
       console.log(`[webhook] Renaming issue from "${issueData.title}" to "${newTitle}"`);
-      executeLinearTool("LINEAR_UPDATE_ISSUE", {
-        issueId: issueData.id,
-        title: newTitle,
-      }).catch((err) => {
-        console.error(`[webhook] Failed to rename issue:`, err);
-      });
+      after(() =>
+        executeLinearTool("LINEAR_UPDATE_ISSUE", {
+          issueId: issueData.id,
+          title: newTitle,
+        }).catch((err) => {
+          console.error(`[webhook] Failed to rename issue:`, err);
+        })
+      );
     }
 
     // Dedup: skip if this slug is already being processed
@@ -161,13 +169,15 @@ export async function POST(request: NextRequest) {
 
     // Process asynchronously — respond immediately to avoid webhook timeout
     processing.add(slug);
-    processLogo(logoRequest)
-      .catch((err) => {
-        console.error(`[webhook] processLogo failed for ${slug}:`, err);
-      })
-      .finally(() => {
-        processing.delete(slug);
-      });
+    after(() =>
+      processLogo(logoRequest)
+        .catch((err) => {
+          console.error(`[webhook] processLogo failed for ${slug}:`, err);
+        })
+        .finally(() => {
+          processing.delete(slug);
+        })
+    );
 
     return NextResponse.json({ status: "processing", slug, websiteUrl });
   } catch (err) {
@@ -342,13 +352,15 @@ async function handleCommentEvent(commentData: any): Promise<NextResponse> {
   };
 
   processing.add(slug);
-  processLogo(logoRequest)
-    .catch((err) => {
-      console.error(`[webhook] processLogo (comment) failed for ${slug}:`, err);
-    })
-    .finally(() => {
-      processing.delete(slug);
-    });
+  after(() =>
+    processLogo(logoRequest)
+      .catch((err) => {
+        console.error(`[webhook] processLogo (comment) failed for ${slug}:`, err);
+      })
+      .finally(() => {
+        processing.delete(slug);
+      })
+  );
 
   return NextResponse.json({
     status: "processing",
