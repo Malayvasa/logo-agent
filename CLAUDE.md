@@ -2,7 +2,7 @@
 
 An automated pipeline: designer files a Linear issue with a website URL → agent fetches a favicon → vectorizes it to SVG → opens a PR on `ComposioHQ/logo-cdn` → **squash-merges it immediately** → posts the merged preview + PR link on the issue → moves the issue to "Done". There is no human merge gate. If the logo is wrong, the designer comments a replacement image on the same issue and the agent opens and merges a **new** PR.
 
-Production: https://logo-agent-production.up.railway.app
+Production: https://logo-agent.preview.composio.dev (Vercel)
 
 ## Architecture at a glance
 
@@ -87,34 +87,39 @@ Utility scripts (all via `npx tsx scripts/<name>.ts`):
 
 ## Deploying (maintainer runbook)
 
-This section is specific to the maintainer's Railway deploy. A fork is free to deploy anywhere Node + Next.js runs — Vercel, Fly, Render, self-hosted, etc.
+This section is specific to the maintainer's Vercel deploy. A fork is free to deploy anywhere Node + Next.js runs — Vercel, Fly, Render, self-hosted, etc.
 
-**Production runs on Railway. The service is NOT connected to GitHub**, so merging a PR does NOT auto-deploy. The maintainer manually pushes a deploy after every merge.
+**Production runs on Vercel, connected to GitHub.** Merging to `main` deploys automatically — there is no manual deploy step. Production moved off Railway on 2026-10-22 after Railway's security incident; don't reintroduce `railway up`.
 
-### After a PR is merged to main, deploy it
+### After a PR is merged to main
 
-From the main repo checkout (not a worktree):
+Nothing to run. Wait for the production deployment to go Ready, then verify:
 
 ```bash
-git checkout main
-git pull --ff-only origin main
-railway up --service logo-agent --ci
+vercel ls logo-agent --scope composio
+curl -sI https://logo-agent.preview.composio.dev/
 ```
 
-Verify: `curl -sI https://logo-agent-production.up.railway.app/` should return `HTTP/2 200`.
+The site should return `HTTP/2 200`. A webhook POST with a bad signature should be rejected (`ComposioWebhookSignatureVerificationError` in the logs) — if it says `Webhook not configured`, `COMPOSIO_WEBHOOK_SECRET` is missing.
 
 Rules:
-- Only deploy **after** the user has merged the PR. Don't deploy from a feature branch. Don't deploy before merge.
-- If `git pull` complains about uncommitted local changes in the main repo, stash them (`git stash push -m "..."`), pull + deploy, then `git stash pop`. Do not discard the user's in-progress work.
-- After deploy, check logs briefly in case the build succeeded but the runtime crashes (`railway logs --service logo-agent`).
+- Check logs after a deploy in case the build succeeded but the runtime crashes: `vercel logs logo-agent.preview.composio.dev --scope composio --since 15m`.
+- Env vars live in the Vercel project (Settings → Environment Variables, Production). Changing one does NOT redeploy — trigger a redeploy afterwards.
+- Use the production domain for the Composio webhook URL. Preview deployments sit behind Vercel's login wall and would block Composio.
 
-### Railway project details
+### Serverless constraints
 
-- Project: `logo-agent` (under "Malay Vasa's Projects")
-- Service: `logo-agent`
-- Environment: `production`
-- Domain: `logo-agent-production.up.railway.app`
-- No GitHub source wired up — Railway's GitHub app is installed on the ComposioHQ org, not the Malayvasa personal account. Deploys are `railway up` only.
+- **Background work goes in `after()`.** The webhook returns immediately and runs `processLogo` / `handleDone` inside Next's `after()`, with `maxDuration = 300` on the route. Never start unawaited work outside `after()` — Vercel can freeze the function once the response is sent.
+- **The `processing` dedup Set is per-instance.** Fluid Compute usually reuses an instance, but a duplicate webhook landing on another instance can still open a second PR. A shared lock (e.g. Redis) is the real fix.
+- **Not migrated yet:** `/api/batch` and `/api/backfill` run long loops in the background with in-memory state and will time out on big batches. The daily wordmark check (`scripts/check-wordmarks.ts`) isn't wired to Vercel Cron, and its `AI_GATEWAY_*` / `SLACK_*` vars aren't set on the project.
+
+### Vercel project details
+
+- Team: `composio` (Composio)
+- Project: `logo-agent`
+- Git: `Malayvasa/logo-agent`, production branch `main`
+- Domain: `logo-agent.preview.composio.dev`
+- Composio webhook URL: `https://logo-agent.preview.composio.dev/api/webhook` (set in the Composio dashboard)
 
 ## Common gotchas
 
@@ -126,4 +131,4 @@ Rules:
 - **Issue stuck in "In Review" with a "merge failed" comment:** branch protection on the CDN repo is blocking the agent's merge (a required approving review, most likely). The PR is left open for a human.
 - **Vectorizer fails with "Image format not supported":** the source is probably an ICO or WebP that sharp can't convert. Covered — `vectorize.ts` catches and wraps as `ImageFetchError` so the next candidate is tried.
 - **SVG source still hits vectorizer:** should not — `process-logo.ts` short-circuits `.svg` candidates. If a logo ends in `.svg` but isn't valid SVG content, it falls back to vectorizer.
-- **Next.js build fails on Railway with `sharp` errors:** shouldn't, Railway's Linux runtime handles native deps. If this pops up, check the nixpacks output — a Node version mismatch is the usual cause.
+- **Next.js build fails on Vercel with `sharp` errors:** shouldn't, `sharp` ships prebuilt Linux binaries. If this pops up, check the Node version in the project settings against `package.json`.
