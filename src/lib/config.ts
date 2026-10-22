@@ -21,6 +21,7 @@ export const githubUserId = () => process.env.GITHUB_USER_ID || "default";
 export const githubConnectedAccount = () => required("GITHUB_CONNECTED_ACCOUNT");
 
 // Linear workspace specifics.
+export const linearTeamId = () => required("LINEAR_TEAM_ID");
 export const linearProjectId = () => required("LINEAR_LOGOS_PROJECT_ID");
 export const linearProjectName = () => process.env.LINEAR_PROJECT_NAME || "Logos";
 export const linearInReviewStateId = () => required("LINEAR_IN_REVIEW_STATE_ID");

@@ -5,6 +5,7 @@ import { normalizeSvg } from "./normalize-svg";
 import { commitAndCreatePR, mergePR } from "./github";
 import { executeLinearTool } from "./composio";
 import { fetchWithLinearAuth } from "./linear-fetch";
+import { labelIfWordmark } from "./wordmark-label";
 import {
   linearInReviewStateId,
   linearDoneStateId,
@@ -203,10 +204,26 @@ export async function processLogo(request: LogoRequest): Promise<string> {
       console.error(`[process-logo] Auto-merge failed for ${slug}:`, err);
     }
 
-    // Step 6: Comment the result. Post-merge the branch is gone, so pin the
+    // Step 6: Check the logo that landed for a wordmark and label the issue.
+    // Best-effort: the logo is already live, so a classifier or Linear failure
+    // only costs the label.
+    let wordmarkNote = "";
+    if (!mergeError) {
+      try {
+        const wordmark = await labelIfWordmark(request.issueId, slug, normalizedSvg);
+        if (wordmark.flagged) {
+          const text = wordmark.textSeen ? ` ("${wordmark.textSeen}")` : "";
+          wordmarkNote = `\n\n⚠️ Looks like it contains a wordmark${text}, so it may be unreadable as a square icon. Labelled **Wordmark**; comment the bare symbol to replace it.`;
+        }
+      } catch (err) {
+        console.error(`[process-logo] Wordmark check failed for ${slug}:`, err);
+      }
+    }
+
+    // Step 7: Comment the result. Post-merge the branch is gone, so pin the
     // preview to the merge commit (falls back to the base branch when GitHub
     // didn't hand back a SHA).
-    console.log(`[process-logo] Step 6: Updating Linear issue`);
+    console.log(`[process-logo] Step 7: Updating Linear issue`);
     const previewRef = mergeCommitSha || repoBranch();
     const cacheBust = mergeCommitSha ? "" : `?v=${Date.now()}`;
     const svgPreviewUrl = `https://raw.githubusercontent.com/${repoOwner()}/${repoName()}/${previewRef}/src/assets/${slug}.svg${cacheBust}`;
@@ -216,11 +233,11 @@ export async function processLogo(request: LogoRequest): Promise<string> {
         commentId,
         mergeError
           ? `**Logo Agent** — PR open, merge failed ❌\n\n**PR:** ${prUrl}\n\n**Error:** ${mergeError}\n\nMerge the PR manually, or comment a replacement image here to open a new one.`
-          : `**Logo Agent** — merged ✅\n\n**PR:** ${prUrl}\n\n![${slug} logo](${svgPreviewUrl})\n\nThe \`${slug}\` logo is live in the CDN. Not right? Comment a replacement image on this issue and the agent will open a new PR.`
+          : `**Logo Agent** — merged ✅\n\n**PR:** ${prUrl}\n\n![${slug} logo](${svgPreviewUrl})\n\nThe \`${slug}\` logo is live in the CDN. Not right? Comment a replacement image on this issue and the agent will open a new PR.${wordmarkNote}`
       );
     }
 
-    // Step 7: Move the issue on — Done once merged (if a Done state is
+    // Step 8: Move the issue on — Done once merged (if a Done state is
     // configured), otherwise leave it in In Review for a human to pick up.
     // Kept inside its own try: a missing state ID must not fail the run — the
     // logo has already landed by this point.
