@@ -201,12 +201,10 @@ function blobUrl(slug: string): string {
 }
 
 async function githubJson<T>(path: string): Promise<T> {
-  const token = process.env.GITHUB_TOKEN;
   const res = await fetch(`https://api.github.com/repos/${repoOwner()}/${repoName()}${path}`, {
     headers: {
       Accept: "application/vnd.github+json",
       "User-Agent": "logo-agent-wordmarks",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
   });
   if (!res.ok) {
