@@ -5,10 +5,19 @@ import { NextRequest, NextResponse } from "next/server";
 // closed (503) when the env var is missing, so a misconfigured deploy can never
 // expose unauthenticated admin endpoints.
 export function requireAdmin(request: NextRequest): NextResponse | null {
-  const expected = process.env.ADMIN_API_KEY;
+  return requireBearer(request, "ADMIN_API_KEY", "Admin endpoint");
+}
+
+// Same check for Vercel Cron, which sends `Authorization: Bearer $CRON_SECRET`.
+export function requireCron(request: NextRequest): NextResponse | null {
+  return requireBearer(request, "CRON_SECRET", "Cron endpoint");
+}
+
+function requireBearer(request: NextRequest, envName: string, label: string): NextResponse | null {
+  const expected = process.env[envName];
   if (!expected) {
     return NextResponse.json(
-      { error: "Admin endpoint not configured (set ADMIN_API_KEY)" },
+      { error: `${label} not configured (set ${envName})` },
       { status: 503 }
     );
   }

@@ -109,7 +109,7 @@ npx tsx scripts/check-wordmarks.ts --dry-run --all       # every logo in the CDN
 npx tsx scripts/check-wordmarks.ts --slugs instantly,tinder
 ```
 
-In production it runs once a day as a Railway cron service (`npx tsx scripts/check-wordmarks.ts`, schedule `0 4 * * *`), so each run covers the 24 hours since the last. A clean run posts nothing. Needs the `Wordmark check` env vars from `.env.example` plus a Slack connection in Composio.
+In production it runs once a day as a Vercel Cron job (`/api/cron/wordmarks`, schedule `0 4 * * *` in `vercel.json`), so each run covers the 24 hours since the last. Set `CRON_SECRET` on the project so only Vercel can trigger it. A clean run posts nothing. Needs the `Wordmark check` env vars from `.env.example` plus a Slack connection in Composio.
 
 ## Deploying
 

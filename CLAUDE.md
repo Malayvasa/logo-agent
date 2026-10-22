@@ -111,7 +111,8 @@ Rules:
 
 - **Background work goes in `after()`.** The webhook returns immediately and runs `processLogo` / `handleDone` inside Next's `after()`, with `maxDuration = 300` on the route. Never start unawaited work outside `after()` — Vercel can freeze the function once the response is sent.
 - **The `processing` dedup Set is per-instance.** Fluid Compute usually reuses an instance, but a duplicate webhook landing on another instance can still open a second PR. A shared lock (e.g. Redis) is the real fix.
-- **Not migrated yet:** `/api/batch` and `/api/backfill` run long loops in the background with in-memory state and will time out on big batches. The daily wordmark check (`scripts/check-wordmarks.ts`) isn't wired to Vercel Cron, and its `AI_GATEWAY_*` / `SLACK_*` vars aren't set on the project.
+- **Not migrated yet:** `/api/batch` and `/api/backfill` run long loops in the background with in-memory state and will time out on big batches.
+- **Wordmark check runs on Vercel Cron:** `vercel.json` schedules `GET /api/cron/wordmarks` daily at 04:00 UTC, guarded by `CRON_SECRET`. The logic lives in `src/lib/wordmark-check.ts`; `scripts/check-wordmarks.ts` is the CLI for manual runs. On Vercel the AI Gateway authenticates via OIDC, so `AI_GATEWAY_API_KEY` isn't set there.
 
 ### Vercel project details
 
