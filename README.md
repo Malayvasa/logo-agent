@@ -64,7 +64,7 @@ Linear ticket           Logo Agent              <your-repo>/logo-cdn
                    →    re-run ───────────────→ new PR, merged
 ```
 
-1. Designer files a Linear issue. The body has a website URL (the agent also falls back to Composio's toolkit catalog if no URL is provided).
+1. Designer files a Linear issue. The body has to include the company's website URL. Without one, the agent comments asking for it and doesn't fetch anything.
 2. Composio's webhook fires. [`/api/webhook`](src/app/api/webhook/route.ts) verifies the HMAC signature and kicks off the pipeline.
 3. The agent discovers favicon candidates and tries each one. SVGs go straight through; rasters route through vectorizer.ai.
 4. The SVG gets rewritten to a 128×128 viewBox and committed on a `logo/<slug>` branch. A PR is opened against your CDN repo.

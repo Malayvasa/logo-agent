@@ -7,7 +7,7 @@ Production: https://logo-agent.preview.composio.dev (Vercel)
 ## Architecture at a glance
 
 **Entry points:**
-- `src/app/api/webhook/route.ts` — Linear webhook handler. Receives `LINEAR_ISSUE_UPDATED_TRIGGER` events from Composio, deduplicates, parses slug + website URL, kicks off `processLogo`. Also handles comment-triggered reruns (drop an image / URL / raw `<svg>` in a comment) and the `Done` state transition, which is now only a backstop (`handleDone`) for a PR whose auto-merge failed.
+- `src/app/api/webhook/route.ts` — Linear webhook handler. Receives `LINEAR_ISSUE_UPDATED_TRIGGER` events from Composio, deduplicates, parses slug + website URL, kicks off `processLogo`. An issue with no website in its description is rejected with a comment asking for one; the agent never guesses the site. Also handles comment-triggered reruns (drop an image / URL / raw `<svg>` in a comment) and the `Done` state transition, which is now only a backstop (`handleDone`) for a PR whose auto-merge failed.
 - `src/app/api/batch/route.ts` — one-shot endpoint that pulls all Triage-state issues from the Logos project and processes them in sequence.
 - `src/app/api/backfill/route.ts` — batch endpoint that takes an explicit list of slugs and runs the full pipeline over them (for seeding logos without going through Linear). Uses Composio's v2 REST API directly for Linear issue creation (see "Two ways to call Composio" below).
 

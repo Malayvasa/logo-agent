@@ -126,18 +126,18 @@ export async function POST(request: NextRequest) {
     // Derive a slug from the issue title (or description)
     const slug = deriveSlug(issueData.title, issueData.description);
 
-    // Extract website URL from the issue description, fall back to Composio toolkit API
-    let websiteUrl = extractUrl(issueData.description || "");
+    // The issue must name the website to pull the logo from. Guessing one (the
+    // old toolkit/search fallback) could land a different company's logo on
+    // the CDN, and every run auto-merges, so reject and ask instead.
+    const websiteUrl = extractUrl(issueData.description || "");
     if (!websiteUrl) {
-      console.log("[webhook] No URL in description, trying Composio toolkit API for slug:", slug);
-      websiteUrl = await fetchToolkitUrl(slug);
-    }
-    if (!websiteUrl) {
-      console.log("[webhook] No URL found for issue, skipping");
-      return NextResponse.json({
-        status: "skipped",
-        reason: "no URL in description or toolkit API",
-      });
+      console.log(`[webhook] No website in issue ${issueData.identifier}, rejecting`);
+      after(() =>
+        askForWebsite(issueData.id, slug).catch((err) => {
+          console.error(`[webhook] Failed to ask for a website on ${issueData.identifier}:`, err);
+        })
+      );
+      return NextResponse.json({ status: "rejected", reason: "no website in issue description" });
     }
 
     // Rename generic form submissions like "[Logo Request] submission" to "[slug] Add logo"
@@ -429,85 +429,18 @@ function deriveSlug(title: string, description?: string): string {
     .replace(/[\s-]+/g, "_");
 }
 
-async function fetchToolkitUrl(slug: string): Promise<string | null> {
-  const apiKey = process.env.COMPOSIO_API_KEY;
-  if (!apiKey) return null;
+const NO_WEBSITE_COMMENT = "**Logo Agent** — needs a website ❌";
 
-  const lookupSlug = slug.replace(/^_+/, "");
+// Posts the rejection once: the webhook fires on every update (Triage, then
+// Todo, ...), so skip if the issue already carries it.
+async function askForWebsite(issueId: string, slug: string): Promise<void> {
+  const result = await executeLinearTool("LINEAR_GET_LINEAR_ISSUE", { issue_id: issueId });
+  const comments: { body?: string }[] =
+    result.data?.issue?.comments?.nodes || result.data?.comments?.nodes || [];
+  if (comments.some((c) => c.body?.startsWith(NO_WEBSITE_COMMENT))) return;
 
-  // Strategy 1: Toolkit API (meta.app_url)
-  try {
-    const res = await fetch(`https://backend.composio.dev/api/v3/toolkits/${lookupSlug}`, {
-      headers: { "x-api-key": apiKey },
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data?.meta?.app_url) {
-        console.log(`[webhook] Toolkit API returned app_url: ${data.meta.app_url}`);
-        return data.meta.app_url;
-      }
-    }
-  } catch (err) {
-    console.log(`[webhook] Toolkit API lookup failed for ${slug}:`, err);
-  }
-
-  // Strategy 2: Search using app description via Composio Search
-  console.log(`[webhook] No toolkit URL for ${slug}, trying search fallback`);
-  return searchForWebsite(slug, apiKey);
-}
-
-async function searchForWebsite(slug: string, apiKey: string): Promise<string | null> {
-  try {
-    // Get app description
-    let description = "";
-    try {
-      const lookupSlug = slug.replace(/^_+/, "");
-      const appsRes = await fetch(`https://backend.composio.dev/api/v1/apps?limit=1000`, {
-        headers: { "x-api-key": apiKey },
-      });
-      if (appsRes.ok) {
-        const appsData = await appsRes.json();
-        const app = (appsData.items || []).find((a: { key: string }) => a.key === lookupSlug);
-        description = app?.description || "";
-      }
-    } catch { /* continue without description */ }
-
-    const query = description
-      ? `${slug} ${description.substring(0, 60)} official website`
-      : `${slug} software official website`;
-
-    console.log(`[webhook] Searching for: ${query}`);
-
-    const res = await fetch(
-      "https://backend.composio.dev/api/v2/actions/COMPOSIO_SEARCH_SEARCH/execute",
-      {
-        method: "POST",
-        headers: { "x-api-key": apiKey, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          appName: "composio_search",
-          entityId: "default",
-          input: { query },
-        }),
-      }
-    );
-
-    if (!res.ok) return null;
-
-    const data = await res.json();
-    const results = data?.data?.results?.organic_results || [];
-
-    if (results.length > 0) {
-      const link = results[0].link;
-      const url = new URL(link);
-      const domain = url.hostname.replace(/^www\./, "");
-      const websiteUrl = `https://${domain}`;
-      console.log(`[webhook] Search found domain for ${slug}: ${websiteUrl}`);
-      return websiteUrl;
-    }
-
-    return null;
-  } catch (err) {
-    console.log(`[webhook] Search failed for ${slug}:`, err);
-    return null;
-  }
+  await executeLinearTool("LINEAR_CREATE_LINEAR_COMMENT", {
+    issue_id: issueId,
+    body: `${NO_WEBSITE_COMMENT}\n\nI can't find a website in this issue, so I haven't fetched a logo for \`${slug}\`. Add the company's website to the description (e.g. \`Website: https://example.com\`) and I'll pick it up, or comment the logo image directly.`,
+  });
 }
