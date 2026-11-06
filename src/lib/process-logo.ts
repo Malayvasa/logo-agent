@@ -89,6 +89,7 @@ export async function processLogo(request: LogoRequest): Promise<string> {
 
   try {
     let rawSvg: string | null = null;
+    let vectorizedWith = "";
 
     // Fast path: user pasted SVG markup in a Linear comment. Trust it as-is —
     // skip favicon discovery and the vectorizer, and go straight to normalize.
@@ -165,7 +166,8 @@ export async function processLogo(request: LogoRequest): Promise<string> {
 
         const result = await vectorize(candidate);
         rawSvg = result.svgContent;
-        console.log(`[process-logo] Vectorized SVG received (${rawSvg.length} chars)`);
+        vectorizedWith = result.engine === "quiver" ? " (Quiver, gradients detected)" : "";
+        console.log(`[process-logo] Vectorized SVG received via ${result.engine} (${rawSvg.length} chars)`);
         break;
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
@@ -182,7 +184,7 @@ export async function processLogo(request: LogoRequest): Promise<string> {
     }
 
     if (commentId) {
-      await updateComment(commentId, `**Logo Agent** processing **${slug}**\n\n✅ Favicon fetched\n✅ Vectorized to SVG\n⏳ Creating PR...`);
+      await updateComment(commentId, `**Logo Agent** processing **${slug}**\n\n✅ Favicon fetched\n✅ Vectorized to SVG${vectorizedWith}\n⏳ Creating PR...`);
     }
     } // end favicon-discovery branch
 

@@ -15,7 +15,7 @@ Production: https://logo-agent.preview.composio.dev (Vercel)
 - `src/lib/process-logo.ts` — main agent flow. Creates a status comment, fetches favicon, vectorizes, normalizes SVG, opens a PR, **merges it**, posts the merged preview + PR link, moves the issue to "Done" (or "In Review" if the merge failed).
 - `src/lib/handle-done.ts` — backstop on the Done transition. `processLogo` merges its own PR and sets Done itself, so this normally finds nothing to merge; it only catches PRs whose auto-merge failed and that a human then approved.
 - `src/lib/fetch-favicon.ts` — discovers favicon candidates from a site (favicon.ico, apple-touch-icon, meta tags).
-- `src/lib/vectorize.ts` — raster → SVG via vectorizer.ai. SVG candidates skip this step (see `process-logo.ts`).
+- `src/lib/vectorize.ts` — raster → SVG. A vision model (`src/lib/detect-gradient.ts`, via AI Gateway) checks for colour gradients first: gradient logos go to Quiver (`arrow-2`), everything else to vectorizer.ai. The check only runs when `QUIVER_API_KEY` is set, and any failure (check or Quiver) falls back to vectorizer.ai. SVG candidates skip this step (see `process-logo.ts`).
 - `src/lib/normalize-svg.ts` — resizes/centers the SVG to a 128×128 viewBox.
 - `src/lib/svg-raster.ts` — `findEmbeddedRaster` flags SVGs that are just a PNG/JPEG wrapped in `<image>`.
 - `src/lib/github.ts` — GitHub ops (create branch, commit, PR, merge, delete branch).
