@@ -24,7 +24,7 @@ It's a real, in-production agent running on [Composio](https://composio.dev) —
 - **Corrections are a comment away.** Reviewing happens *after* the merge, not before it. Comment a replacement image on the issue and the agent opens a brand-new PR against the current `main`/`master` and merges that too — the CDN is always one comment from correct.
 - **Smart favicon discovery.** Scrapes `<link rel="icon">`, probes common paths (`/favicon-192x192.png`, `/apple-touch-icon.png`), falls back to the Google Favicon API.
 - **Anything → SVG.** Rasters (PNG/JPG/ICO/WebP) go through vectorizer.ai. Native SVGs short-circuit straight to the commit step. Everything gets rewritten to a uniform 128×128 viewBox.
-- **Comment-driven retries.** Drop a replacement image, public URL, or raw `<svg>` markup into a Linear comment and the agent re-runs against it. Four input shapes are supported in priority order — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#comment-input-contract) for the contract.
+- **Comment-driven retries.** Drop a replacement image, public URL, or raw `<svg>` markup into a Linear comment and the agent re-runs against it. SVGs must be real vectors: one that just wraps a PNG/JPEG in an `<image>` tag is rejected with a comment asking for a proper export. Four input shapes are supported in priority order — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#comment-input-contract) for the contract.
 - **Webhook-native.** No polling, no cron. HMAC-verified Linear webhooks via Composio.
 
 ## Quick start

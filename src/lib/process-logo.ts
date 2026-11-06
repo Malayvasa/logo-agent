@@ -6,6 +6,7 @@ import { commitAndCreatePR, mergePR } from "./github";
 import { executeLinearTool } from "./composio";
 import { fetchWithLinearAuth } from "./linear-fetch";
 import { labelIfWordmark } from "./wordmark-label";
+import { findEmbeddedRaster, embeddedRasterMessage } from "./svg-raster";
 import {
   linearInReviewStateId,
   linearDoneStateId,
@@ -96,6 +97,10 @@ export async function processLogo(request: LogoRequest): Promise<string> {
       if (!request.svgContent.includes("<svg") || !request.svgContent.includes("</svg>")) {
         throw new Error("Provided content does not look like SVG markup");
       }
+      const raster = findEmbeddedRaster(request.svgContent);
+      if (raster) {
+        throw new Error(embeddedRasterMessage(raster));
+      }
       rawSvg = request.svgContent;
     } else {
     // Step 1: Fetch favicon candidates
@@ -143,6 +148,13 @@ export async function processLogo(request: LogoRequest): Promise<string> {
           }
           const svgContent = await response.text();
           if (svgContent.includes("<svg") && svgContent.includes("</svg>")) {
+            // A PNG wrapped in <image> isn't a vector. For a comment attachment
+            // this surfaces to the designer; for a favicon candidate it moves
+            // on to the next one.
+            const raster = findEmbeddedRaster(svgContent);
+            if (raster) {
+              throw new ImageFetchError(embeddedRasterMessage(raster));
+            }
             rawSvg = svgContent;
             console.log(`[process-logo] Direct SVG fetched (${rawSvg.length} chars)`);
             break;
