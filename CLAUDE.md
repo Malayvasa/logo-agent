@@ -17,6 +17,7 @@ Production: https://logo-agent.preview.composio.dev (Vercel)
 - `src/lib/fetch-favicon.ts` — discovers favicon candidates from a site (favicon.ico, apple-touch-icon, meta tags).
 - `src/lib/vectorize.ts` — raster → SVG via vectorizer.ai. SVG candidates skip this step (see `process-logo.ts`).
 - `src/lib/normalize-svg.ts` — resizes/centers the SVG to a 128×128 viewBox.
+- `src/lib/svg-raster.ts` — `findEmbeddedRaster` flags SVGs that are just a PNG/JPEG wrapped in `<image>`.
 - `src/lib/github.ts` — GitHub ops (create branch, commit, PR, merge, delete branch).
 - `src/lib/composio.ts` — Composio client + two tool-exec wrappers (`executeTool` for GitHub, `executeLinearTool` for Linear).
 
@@ -54,6 +55,7 @@ If you're adding a new Linear call, use `executeLinearTool`. Don't reach for the
 - All of the above are read through helpers in `src/lib/config.ts` — never hardcode IDs in route files.
 - **Image previews in Linear comments:** Linear does NOT render `data:image/*;base64,...` URIs — they show up as literal base64 text. Always use a `raw.githubusercontent.com` URL. Prefer a merge-commit-SHA-pinned URL (`.../logo-cdn/<sha>/src/assets/<slug>.svg`) if you want the preview frozen in time; `master` URL is fine for live previews.
 - **Issue title normalization:** the webhook renames `"[Logo Request] submission"` titles to `"[<slug>] Add logo"` so downstream tooling has a consistent title.
+- **Comment-supplied SVGs must be real vectors:** every SVG that comes in through a comment (pasted markup, attachment, or URL) goes through `findEmbeddedRaster` before it's committed. Never commit an SVG that wraps a raster; don't add a new SVG input path that skips this check.
 - **Agent comment marker:** every comment the agent posts starts with `**Logo Agent**`. Use this to detect / clean up prior comments before writing new ones.
 
 ## GitHub-specific rules
@@ -130,5 +132,6 @@ Rules:
 - **PR creation fails right after a rerun:** the regenerated SVG is probably byte-identical to what's already on the base branch, so the commit was a no-op and GitHub refuses a PR with no diff. `github.ts` deletes the throwaway branch and raises that explicitly.
 - **Issue stuck in "In Review" with a "merge failed" comment:** branch protection on the CDN repo is blocking the agent's merge (a required approving review, most likely). The PR is left open for a human.
 - **Vectorizer fails with "Image format not supported":** the source is probably an ICO or WebP that sharp can't convert. Covered — `vectorize.ts` catches and wraps as `ImageFetchError` so the next candidate is tried.
+- **SVG with an embedded PNG/JPEG is rejected:** an `<image>` / `<feImage>` whose href is a raster data URI (`data:image/png;base64,…`) or a raster URL (`.png`, `.jpg`, …) makes the SVG "not a real vector". For SVG pasted or attached in a comment, the run fails before any PR and the status comment tells the designer to re-export as outlined vector shapes. For a favicon `.svg` candidate, it's an `ImageFetchError`, so the next candidate is tried. `<image>` pointing at another SVG is allowed.
 - **SVG source still hits vectorizer:** should not — `process-logo.ts` short-circuits `.svg` candidates. If a logo ends in `.svg` but isn't valid SVG content, it falls back to vectorizer.
 - **Next.js build fails on Vercel with `sharp` errors:** shouldn't, `sharp` ships prebuilt Linux binaries. If this pops up, check the Node version in the project settings against `package.json`.

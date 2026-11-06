@@ -78,6 +78,8 @@ If the agent picks the wrong favicon, a designer drops a replacement into a Line
 3. **Public image URL** ending in a supported extension. SVG → direct fetch, raster → vectorizer. Query strings are tolerated.
 4. **Markdown-wrapped URL** (`[label](<url>)`). The wrapper is stripped before extraction.
 
+**SVGs must be real vectors.** Whatever the shape, an SVG input is rejected if it contains an `<image>` / `<feImage>` that embeds or links a raster (`data:image/png;base64,…`, `https://…/logo.png`, JPEG, WebP, etc.). Some design tools export a PNG wrapped in an SVG shell; it passes every "is this SVG?" check but won't scale. The run fails before a PR is opened and the agent's status comment asks the designer to re-export the logo as outlined vector shapes. An `<image>` that points at another SVG is allowed. Detection lives in [`src/lib/svg-raster.ts`](../src/lib/svg-raster.ts).
+
 Status comments the agent writes always start with `**Logo Agent**` so it can find and delete its own old comments on retries.
 
 ## Repo layout
@@ -95,6 +97,7 @@ src/
     fetch-favicon.ts        ← favicon discovery
     vectorize.ts            ← vectorizer.ai + sharp pre-processing
     normalize-svg.ts        ← 128×128 viewBox rewrite
+    svg-raster.ts           ← detects PNG/JPEG wrapped inside an SVG
     github.ts               ← branch / commit / PR / merge ops
     composio.ts             ← Composio client + dispatch wrappers
     linear-fetch.ts         ← fetch wrapper that auths uploads.linear.app
