@@ -4,9 +4,9 @@ import { z } from "zod";
 import { aiGatewayModel } from "./config";
 
 // Logos in the CDN render as square app icons, so a brand name spelled out
-// next to (or instead of) the mark gets shrunk to an unreadable strip. The
-// January bulk import brought in a few of these (instantly was one); this
-// module flags them so a human can swap in the bare symbol.
+// next to the mark gets shrunk to an unreadable strip. The January bulk
+// import brought in a few of these (instantly was one); this module flags
+// them so a human can swap in the bare symbol.
 
 const RENDER_SIZE = 256;
 const GAP = 16;
@@ -15,6 +15,7 @@ const classificationSchema = z.object({
   kind: z.enum(["symbol", "monogram", "wordmark", "symbol_with_wordmark"]),
   confidence: z.enum(["low", "medium", "high"]),
   textSeen: z.string(),
+  textNamesBrand: z.boolean(),
   reason: z.string(),
 });
 
@@ -37,7 +38,9 @@ const PROMPT = [
   `- "monogram": the mark is one or two letters (e.g. a stylised "f" or "HP"), with no other words.`,
   `- "wordmark": the logo is mainly the brand name or other words spelled out (three or more letters of readable text).`,
   `- "symbol_with_wordmark": a graphic mark plus the brand name or other words next to or under it.`,
-  `Put any readable text in textSeen (empty string if none). Keep reason under 120 characters.`,
+  `Put any readable text in textSeen (empty string if none).`,
+  `Set textNamesBrand to false only if the text clearly names a different, unrelated product or company than "{slug}" (a sign the wrong logo was used). Text naming the product, its parent company or an old name counts as true, and so does no text at all.`,
+  `Keep reason under 120 characters.`,
 ].join("\n");
 
 export async function detectWordmark(
@@ -48,9 +51,11 @@ export async function detectWordmark(
   const { preview, aspectRatio } = await renderForModel(svg, darkSvg);
   const { classification } = await classifyPreview(slug, preview, aiGatewayModel());
 
+  // Wordmark-only logos usually mean the brand has no separate symbol, so
+  // there's nothing better to swap in. Flag a symbol shipped with text, and
+  // any logo whose text names some other brand (rockset showing "OpenAI").
   const flagged =
-    classification.kind === "wordmark" ||
-    classification.kind === "symbol_with_wordmark";
+    classification.kind === "symbol_with_wordmark" || !classification.textNamesBrand;
 
   return { slug, flagged, aspectRatio, preview, ...classification };
 }
@@ -64,7 +69,7 @@ export async function classifyPreview(slug: string, preview: Buffer, model: stri
       {
         role: "user",
         content: [
-          { type: "text", text: PROMPT.replace("{slug}", slug) },
+          { type: "text", text: PROMPT.replaceAll("{slug}", slug) },
           { type: "file", mediaType: "image/png", data: preview },
         ],
       },
