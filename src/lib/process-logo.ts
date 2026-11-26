@@ -95,7 +95,8 @@ export async function processLogo(request: LogoRequest): Promise<string> {
     // Fast path: user pasted SVG markup in a Linear comment. Trust it as-is —
     // skip favicon discovery and the vectorizer, and go straight to normalize.
     // A paste that only wraps a raster falls back to the favicon path below
-    // when the issue names a website.
+    // when the issue names a website (attached/linked SVGs do the same in the
+    // candidate loop).
     if (request.svgContent) {
       console.log(`[process-logo] Using inline SVG from comment (${request.svgContent.length} chars)`);
       if (!request.svgContent.includes("<svg") || !request.svgContent.includes("</svg>")) {
@@ -142,7 +143,12 @@ export async function processLogo(request: LogoRequest): Promise<string> {
     // Step 2: Try each candidate until one vectorizes successfully
     console.log(`[process-logo] Step 2: Vectorizing`);
     let lastError: Error | null = null;
+    // Set when the SVG the designer attached or linked turns out to wrap a
+    // raster; the favicon candidates get appended once, below.
+    let providedSvgWrapsRaster = false;
+    let fellBackToFavicon = false;
 
+    // for...of visits candidates appended during the loop (the favicon fallback).
     for (const candidate of candidates) {
       try {
         console.log(`[process-logo] Trying candidate: ${candidate}`);
@@ -169,10 +175,12 @@ export async function processLogo(request: LogoRequest): Promise<string> {
           const svgContent = await response.text();
           if (svgContent.includes("<svg") && svgContent.includes("</svg>")) {
             // A PNG wrapped in <image> isn't a vector. For a comment attachment
-            // this surfaces to the designer; for a favicon candidate it moves
-            // on to the next one.
+            // this falls back to the issue's website (or surfaces to the
+            // designer if there is none); for a favicon candidate it moves on
+            // to the next one.
             const raster = findEmbeddedRaster(svgContent);
             if (raster) {
+              providedSvgWrapsRaster = candidate === request.imageUrl;
               throw new ImageFetchError(embeddedRasterMessage(raster));
             }
             rawSvg = svgContent;
@@ -199,6 +207,26 @@ export async function processLogo(request: LogoRequest): Promise<string> {
         // Only retry on image fetch/format errors, not on vectorizer API errors
         if (!(err instanceof ImageFetchError)) {
           throw lastError;
+        }
+        // An attached or linked SVG that only wraps a raster can't be used,
+        // but if the issue names a website, fetch the logo from it instead of
+        // failing the run (same as a pasted SVG, see the fast path above).
+        if (
+          providedSvgWrapsRaster &&
+          !fellBackToFavicon &&
+          websiteUrl &&
+          websiteUrl !== UNKNOWN_WEBSITE
+        ) {
+          fellBackToFavicon = true;
+          console.log(`[process-logo] Provided SVG wraps a raster, falling back to favicon from ${websiteUrl}`);
+          if (commentId) {
+            await updateComment(
+              commentId,
+              `**Logo Agent** processing **${slug}**\n\n⚠️ ${lastError.message}\n⏳ Fetching favicon from ${websiteUrl} instead...`
+            );
+          }
+          const fallback = await fetchFavicon(websiteUrl);
+          candidates.push(...fallback.candidates);
         }
       }
     }
