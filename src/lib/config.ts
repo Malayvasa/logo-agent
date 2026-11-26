@@ -41,6 +41,10 @@ export const slackAlertChannel = () => required("SLACK_ALERT_CHANNEL");
 export const slackConnectedAccount = () => required("SLACK_CONNECTED_ACCOUNT");
 export const slackUserId = () => process.env.SLACK_USER_ID || githubUserId();
 
+// Comment-triggered runs on an issue with no website in its description get
+// this placeholder, so the pipeline can tell there is no site to fall back to.
+export const UNKNOWN_WEBSITE = "https://unknown";
+
 // Used by URL filters to recognize "the target repo" so we don't treat a PR
 // link pasted in an issue description as the source website URL.
 export const repoUrlFragment = () => `github.com/${repoOwner()}/${repoName()}`;

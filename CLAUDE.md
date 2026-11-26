@@ -55,7 +55,7 @@ If you're adding a new Linear call, use `executeLinearTool`. Don't reach for the
 - All of the above are read through helpers in `src/lib/config.ts` — never hardcode IDs in route files.
 - **Image previews in Linear comments:** Linear does NOT render `data:image/*;base64,...` URIs — they show up as literal base64 text. Always use a `raw.githubusercontent.com` URL. Prefer a merge-commit-SHA-pinned URL (`.../logo-cdn/<sha>/src/assets/<slug>.svg`) if you want the preview frozen in time; `master` URL is fine for live previews.
 - **Issue title normalization:** the webhook renames `"[Logo Request] submission"` titles to `"[<slug>] Add logo"` so downstream tooling has a consistent title.
-- **Comment-supplied SVGs must be real vectors:** every SVG that comes in through a comment (pasted markup, attachment, or URL) goes through `findEmbeddedRaster` before it's committed. Never commit an SVG that wraps a raster; don't add a new SVG input path that skips this check.
+- **Comment-supplied SVGs must be real vectors:** every SVG that comes in through a comment (pasted markup, attachment, or URL) goes through `findEmbeddedRaster` before it's committed. Never commit an SVG that wraps a raster; don't add a new SVG input path that skips this check. A pasted SVG that fails it falls back to the normal favicon path when the issue names a website; with no website the run fails as before.
 - **Agent comment marker:** every comment the agent posts starts with `**Logo Agent**`. Use this to detect / clean up prior comments before writing new ones.
 
 ## GitHub-specific rules

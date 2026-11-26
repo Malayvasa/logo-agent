@@ -13,6 +13,7 @@ import {
   repoOwner,
   repoName,
   repoBranch,
+  UNKNOWN_WEBSITE,
 } from "./config";
 
 async function createComment(issueId: string, body: string): Promise<string | null> {
@@ -93,17 +94,35 @@ export async function processLogo(request: LogoRequest): Promise<string> {
 
     // Fast path: user pasted SVG markup in a Linear comment. Trust it as-is —
     // skip favicon discovery and the vectorizer, and go straight to normalize.
+    // A paste that only wraps a raster falls back to the favicon path below
+    // when the issue names a website.
     if (request.svgContent) {
       console.log(`[process-logo] Using inline SVG from comment (${request.svgContent.length} chars)`);
       if (!request.svgContent.includes("<svg") || !request.svgContent.includes("</svg>")) {
         throw new Error("Provided content does not look like SVG markup");
       }
       const raster = findEmbeddedRaster(request.svgContent);
-      if (raster) {
+      if (!raster) {
+        rawSvg = request.svgContent;
+      } else if (websiteUrl && websiteUrl !== UNKNOWN_WEBSITE) {
+        // The pasted SVG is a PNG/JPEG in an <image> wrapper, so it can't be
+        // used, but the issue names a website: drop the paste and fetch the
+        // logo from the site the normal way instead of failing the run.
+        console.log(
+          `[process-logo] Pasted SVG wraps a ${raster.format} (${raster.kind}), falling back to favicon from ${websiteUrl}`
+        );
+        if (commentId) {
+          await updateComment(
+            commentId,
+            `**Logo Agent** processing **${slug}**\n\n⚠️ ${embeddedRasterMessage(raster)}\n⏳ Fetching favicon from ${websiteUrl} instead...`
+          );
+        }
+      } else {
         throw new Error(embeddedRasterMessage(raster));
       }
-      rawSvg = request.svgContent;
-    } else {
+    }
+
+    if (!rawSvg) {
     // Step 1: Fetch favicon candidates
     let candidates: string[];
     if (request.imageUrl) {

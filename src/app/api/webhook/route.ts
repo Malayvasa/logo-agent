@@ -3,7 +3,7 @@ import { getComposio, executeLinearTool } from "@/lib/composio";
 import { processLogo } from "@/lib/process-logo";
 import { handleDone } from "@/lib/handle-done";
 import { isPublicHttpUrl } from "@/lib/auth";
-import { linearProjectName, repoUrlFragment } from "@/lib/config";
+import { linearProjectName, repoUrlFragment, UNKNOWN_WEBSITE } from "@/lib/config";
 import type { LinearIssuePayload, LogoRequest } from "@/types";
 
 // Dedup: track slugs currently being processed to avoid duplicate runs from rapid webhook fires
@@ -354,7 +354,7 @@ async function handleCommentEvent(commentData: any): Promise<NextResponse> {
   }
 
   const slug = deriveSlug(issueTitle, issueDescription);
-  const websiteUrl = extractUrl(issueDescription || "") || "https://unknown";
+  const websiteUrl = extractUrl(issueDescription || "") || UNKNOWN_WEBSITE;
 
   // Dedup matters more now that every run auto-merges: a duplicate webhook
   // would otherwise land the same logo twice via two PRs.
