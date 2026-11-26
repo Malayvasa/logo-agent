@@ -15,7 +15,7 @@ Production: https://logo-agent.preview.composio.dev (Vercel)
 - `src/lib/process-logo.ts` — main agent flow. Creates a status comment, fetches favicon, vectorizes, normalizes SVG, opens a PR, **merges it**, posts the merged preview + PR link, moves the issue to "Done" (or "In Review" if the merge failed).
 - `src/lib/handle-done.ts` — backstop on the Done transition. `processLogo` merges its own PR and sets Done itself, so this normally finds nothing to merge; it only catches PRs whose auto-merge failed and that a human then approved.
 - `src/lib/fetch-favicon.ts` — discovers favicon candidates from a site (favicon.ico, apple-touch-icon, meta tags).
-- `src/lib/vectorize.ts` — raster → SVG. A vision model (`src/lib/detect-gradient.ts`, via AI Gateway) checks for colour gradients first: gradient logos go to Quiver (`arrow-2`), everything else to vectorizer.ai. The check only runs when `QUIVER_API_KEY` is set, and any failure (check or Quiver) falls back to vectorizer.ai. SVG candidates skip this step (see `process-logo.ts`).
+- `src/lib/vectorize.ts` — raster → SVG. A vision model (`src/lib/detect-gradient.ts`, via AI Gateway) checks for colour gradients first: gradient logos go to Quiver (`arrow-2`), everything else to vectorizer.ai. The check only runs when `QUIVER_API_KEY` is set, and any failure (check or Quiver) falls back to vectorizer.ai. A `quiver` label on the issue skips the check and forces Quiver. SVG candidates skip this step (see `process-logo.ts`).
 - `src/lib/normalize-svg.ts` — resizes/centers the SVG to a 128×128 viewBox.
 - `src/lib/svg-raster.ts` — `findEmbeddedRaster` flags SVGs that are just a PNG/JPEG wrapped in `<image>`.
 - `src/lib/github.ts` — GitHub ops (create branch, commit, PR, merge, delete branch).
@@ -55,7 +55,7 @@ If you're adding a new Linear call, use `executeLinearTool`. Don't reach for the
 - All of the above are read through helpers in `src/lib/config.ts` — never hardcode IDs in route files.
 - **Image previews in Linear comments:** Linear does NOT render `data:image/*;base64,...` URIs — they show up as literal base64 text. Always use a `raw.githubusercontent.com` URL. Prefer a merge-commit-SHA-pinned URL (`.../logo-cdn/<sha>/src/assets/<slug>.svg`) if you want the preview frozen in time; `master` URL is fine for live previews.
 - **Issue title normalization:** the webhook renames `"[Logo Request] submission"` titles to `"[<slug>] Add logo"` so downstream tooling has a consistent title.
-- **Comment-supplied SVGs must be real vectors:** every SVG that comes in through a comment (pasted markup, attachment, or URL) goes through `findEmbeddedRaster` before it's committed. Never commit an SVG that wraps a raster; don't add a new SVG input path that skips this check.
+- **Comment-supplied SVGs must be real vectors:** every SVG that comes in through a comment (pasted markup, attachment, or URL) goes through `findEmbeddedRaster` before it's committed. Never commit an SVG that wraps a raster; don't add a new SVG input path that skips this check. A comment SVG (pasted, attached or linked) that fails it falls back to the normal favicon path when the issue names a website; with no website the run fails as before.
 - **Agent comment marker:** every comment the agent posts starts with `**Logo Agent**`. Use this to detect / clean up prior comments before writing new ones.
 
 ## GitHub-specific rules

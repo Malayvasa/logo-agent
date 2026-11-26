@@ -3,7 +3,7 @@ import { getComposio, executeLinearTool } from "@/lib/composio";
 import { processLogo } from "@/lib/process-logo";
 import { handleDone } from "@/lib/handle-done";
 import { isPublicHttpUrl } from "@/lib/auth";
-import { linearProjectName, repoUrlFragment } from "@/lib/config";
+import { linearProjectName, repoUrlFragment, UNKNOWN_WEBSITE } from "@/lib/config";
 import type { LinearIssuePayload, LogoRequest } from "@/types";
 
 // Dedup: track slugs currently being processed to avoid duplicate runs from rapid webhook fires
@@ -123,6 +123,33 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    // Only start a run when the issue just moved into Todo/Triage. Linear
+    // sends an update for every change, including the PR attachment our own
+    // run adds while the issue is still in Triage, and each of those used to
+    // start a second run (two PRs per logo). The in-memory `processing` set
+    // can't catch it because the second webhook often lands on another
+    // serverless instance. Linear's payload lists what changed in
+    // `updatedFrom`; a state change shows up as `updatedFrom.stateId`. A
+    // description edit also counts, so adding a missing website (as the
+    // "needs a website" comment asks) still picks the issue up.
+    const action: string | undefined = rawData?.action;
+    const updatedFrom: Record<string, unknown> | undefined = rawData?.updatedFrom;
+    if (
+      action === "update" &&
+      updatedFrom &&
+      !("stateId" in updatedFrom) &&
+      !("description" in updatedFrom)
+    ) {
+      console.log(
+        `[webhook] ${issueData.identifier} updated in ${issueData?.state?.name} without a state or description change (${Object.keys(updatedFrom).join(", ")}), skipping`
+      );
+      return NextResponse.json({ status: "skipped", reason: "no state change" });
+    }
+    if (action === "update" && !updatedFrom) {
+      // Payload without change info: keep the old behaviour rather than drop runs.
+      console.warn(`[webhook] ${issueData.identifier} update has no updatedFrom; running anyway`);
+    }
+
     // Derive a slug from the issue title (or description)
     const slug = deriveSlug(issueData.title, issueData.description);
 
@@ -165,6 +192,7 @@ export async function POST(request: NextRequest) {
       issueIdentifier: issueData.identifier,
       slug,
       websiteUrl,
+      forceQuiver: hasQuiverLabel(issueData.labels),
     };
 
     // Process asynchronously — respond immediately to avoid webhook timeout
@@ -326,7 +354,7 @@ async function handleCommentEvent(commentData: any): Promise<NextResponse> {
   }
 
   const slug = deriveSlug(issueTitle, issueDescription);
-  const websiteUrl = extractUrl(issueDescription || "") || "https://unknown";
+  const websiteUrl = extractUrl(issueDescription || "") || UNKNOWN_WEBSITE;
 
   // Dedup matters more now that every run auto-merges: a duplicate webhook
   // would otherwise land the same logo twice via two PRs.
@@ -346,6 +374,7 @@ async function handleCommentEvent(commentData: any): Promise<NextResponse> {
     issueIdentifier: issueIdentifier || slug,
     slug,
     websiteUrl,
+    forceQuiver: hasQuiverLabel(issue?.labels),
     ...(inlineSvg
       ? { svgContent: inlineSvg }
       : { imageUrl: extracted!.url, imageUrlIsSvg: extracted!.isSvg }),
@@ -367,6 +396,12 @@ async function handleCommentEvent(commentData: any): Promise<NextResponse> {
     slug,
     source: inlineSvg ? "inline-svg" : extracted!.source,
   });
+}
+
+// A "quiver" label (any case) forces the Quiver vectorizer for that issue.
+function hasQuiverLabel(labels: LinearIssuePayload["labels"]): boolean {
+  const list = Array.isArray(labels) ? labels : labels?.nodes || [];
+  return list.some((l) => l?.name?.trim().toLowerCase() === "quiver");
 }
 
 function isRepoUrl(url: string): boolean {
