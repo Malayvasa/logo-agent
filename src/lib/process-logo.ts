@@ -7,6 +7,7 @@ import { executeLinearTool } from "./composio";
 import { fetchWithLinearAuth } from "./linear-fetch";
 import { labelIfWordmark } from "./wordmark-label";
 import { findEmbeddedRaster, embeddedRasterMessage } from "./svg-raster";
+import { claimRun } from "./run-claim";
 import {
   linearInReviewStateId,
   linearDoneStateId,
@@ -40,53 +41,62 @@ async function updateComment(commentId: string, body: string): Promise<void> {
   }
 }
 
-async function deleteOldAgentComments(issueId: string): Promise<void> {
-  try {
-    const result = await executeLinearTool("LINEAR_GET_LINEAR_ISSUE", {
-      issue_id: issueId,
-    });
-
-    const comments = result.data?.issue?.comments?.nodes
-      || result.data?.comments?.nodes
-      || [];
-
-    const agentComments = comments.filter(
-      (c: { body?: string }) => c.body?.startsWith("**Logo Agent**")
-    );
-
-    console.log(`[process-logo] Found ${agentComments.length} old agent comments to delete`);
-
-    await Promise.all(agentComments.map(async (comment: { id: string }) => {
-      try {
-        await executeLinearTool("LINEAR_RUN_QUERY_OR_MUTATION", {
-          query_or_mutation: `mutation DeleteComment($id: String!) { commentDelete(id: $id) { success } }`,
-          variables: { id: comment.id },
-        });
-        console.log(`[process-logo] Deleted old comment: ${comment.id}`);
-      } catch (err) {
-        console.error(`[process-logo] Failed to delete comment ${comment.id}:`, err);
-      }
-    }));
-  } catch (err) {
-    console.error(`[process-logo] Failed to fetch old comments:`, err);
-  }
+async function deleteComments(ids: string[]): Promise<void> {
+  await Promise.all(ids.map(async (id) => {
+    try {
+      await executeLinearTool("LINEAR_RUN_QUERY_OR_MUTATION", {
+        query_or_mutation: `mutation DeleteComment($id: String!) { commentDelete(id: $id) { success } }`,
+        variables: { id },
+      });
+      console.log(`[process-logo] Deleted old comment: ${id}`);
+    } catch (err) {
+      console.error(`[process-logo] Failed to delete comment ${id}:`, err);
+    }
+  }));
 }
 
+/**
+ * Runs the pipeline for one request. Returns the PR URL, or "" when another
+ * run already owns this request and this one stepped aside.
+ */
 export async function processLogo(request: LogoRequest): Promise<string> {
   const { slug, websiteUrl, issueIdentifier } = request;
+  const trigger = request.trigger ?? { kind: "manual" };
 
   console.log(
-    `[process-logo] Starting: slug=${slug}, url=${websiteUrl}, issue=${issueIdentifier}`
+    `[process-logo] Starting: slug=${slug}, url=${websiteUrl}, issue=${issueIdentifier}, trigger=${trigger.kind}`
   );
 
-  // Clean up old agent comments before creating new ones
-  await deleteOldAgentComments(request.issueId);
-
-  // Create initial status comment
+  // Post the status comment first: it doubles as this run's claim on the
+  // request. The earliest claim wins and every duplicate delivery of the same
+  // webhook steps aside here, before fetching, vectorizing or touching GitHub.
   const initialStatus = request.svgContent
     ? `**Logo Agent** processing **${slug}**\n\n✅ Using SVG you provided (${request.svgContent.length} chars)\n⏳ Creating PR...`
     : `**Logo Agent** processing **${slug}**\n\n⏳ Fetching favicon from ${websiteUrl}...`;
   const commentId = await createComment(request.issueId, initialStatus);
+
+  if (commentId) {
+    let claim: Awaited<ReturnType<typeof claimRun>> | null = null;
+    try {
+      claim = await claimRun(request.issueId, commentId, trigger);
+    } catch (err) {
+      // Can't read the issue back: carry on rather than drop the request.
+      console.error(`[process-logo] Claim check failed for ${issueIdentifier}, running anyway:`, err);
+    }
+    if (claim && !claim.won) {
+      console.log(
+        `[process-logo] ${issueIdentifier} already has a run for this request (comment ${claim.winnerId}), stepping aside`
+      );
+      await deleteComments([commentId]);
+      return "";
+    }
+    // Clear the previous run's result comments (never a later run's).
+    if (claim?.won && claim.olderAgentCommentIds.length > 0) {
+      await deleteComments(claim.olderAgentCommentIds);
+    }
+  } else {
+    console.warn(`[process-logo] No status comment for ${issueIdentifier}; can't claim the run, running anyway`);
+  }
 
   try {
     let rawSvg: string | null = null;
@@ -303,20 +313,24 @@ export async function processLogo(request: LogoRequest): Promise<string> {
       );
     }
 
-    // Step 8: Move the issue on — Done once merged (if a Done state is
-    // configured), otherwise leave it in In Review for a human to pick up.
-    // Kept inside its own try: a missing state ID must not fail the run — the
-    // logo has already landed by this point.
-    try {
-      const doneStateId = linearDoneStateId();
-      const merged = !mergeError && !!doneStateId;
-      await executeLinearTool("LINEAR_UPDATE_ISSUE", {
-        issueId: request.issueId,
-        stateId: merged ? doneStateId : linearInReviewStateId(),
-      });
-      console.log(`[process-logo] Moved issue to ${merged ? "Done" : "In Review"}`);
-    } catch (err) {
-      console.error(`[process-logo] Failed to update issue state:`, err);
+    // Step 8: Move the issue on once the logo has landed: Done if a Done
+    // state is configured, otherwise In Review. A failed merge leaves the
+    // issue where it is (Todo/Triage), so the board doesn't show a logo that
+    // never landed as handled; the status comment carries the error and PR.
+    // Kept inside its own try: a missing state ID must not fail the run.
+    if (!mergeError) {
+      try {
+        const doneStateId = linearDoneStateId();
+        await executeLinearTool("LINEAR_UPDATE_ISSUE", {
+          issueId: request.issueId,
+          stateId: doneStateId || linearInReviewStateId(),
+        });
+        console.log(`[process-logo] Moved issue to ${doneStateId ? "Done" : "In Review"}`);
+      } catch (err) {
+        console.error(`[process-logo] Failed to update issue state:`, err);
+      }
+    } else {
+      console.log(`[process-logo] Merge failed, leaving ${issueIdentifier} in its current state`);
     }
 
     console.log(

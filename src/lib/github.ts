@@ -17,9 +17,16 @@ export interface MergeResult {
 // branch name.
 const MAX_BRANCH_ATTEMPTS = 20;
 // GitHub computes mergeability asynchronously; a PR created a second ago can
-// briefly report as not mergeable.
-const MERGE_ATTEMPTS = 4;
-const MERGE_RETRY_MS = 3000;
+// briefly report as not mergeable. In a burst (dozens of tickets filed at
+// once) the squash merges also collide with each other and GitHub answers
+// "Base branch was modified" until the others land; on Nov 27 eight logos
+// were left unmerged after 4 tries 3s apart. Retry longer, with jitter so
+// colliding runs spread out instead of retrying in lockstep.
+const MERGE_ATTEMPTS = 8;
+const MERGE_RETRY_MIN_MS = 2000;
+const MERGE_RETRY_MAX_MS = 6000;
+const mergeRetryDelay = () =>
+  MERGE_RETRY_MIN_MS + Math.floor(Math.random() * (MERGE_RETRY_MAX_MS - MERGE_RETRY_MIN_MS));
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -237,7 +244,7 @@ export async function mergePR(prNumber: number, branchName: string): Promise<str
     console.log(
       `[github] Merge attempt ${attempt}/${MERGE_ATTEMPTS} for PR #${prNumber} failed: ${lastError.message}`
     );
-    if (attempt < MERGE_ATTEMPTS) await sleep(MERGE_RETRY_MS);
+    if (attempt < MERGE_ATTEMPTS) await sleep(mergeRetryDelay());
   }
 
   throw lastError || new Error(`Failed to merge PR #${prNumber}`);
