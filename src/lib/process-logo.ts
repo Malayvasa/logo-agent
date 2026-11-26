@@ -164,9 +164,14 @@ export async function processLogo(request: LogoRequest): Promise<string> {
           }
         }
 
-        const result = await vectorize(candidate);
+        const result = await vectorize(candidate, { forceQuiver: request.forceQuiver });
         rawSvg = result.svgContent;
-        vectorizedWith = result.engine === "quiver" ? " (Quiver, gradients detected)" : "";
+        vectorizedWith =
+          result.engine === "quiver"
+            ? request.forceQuiver
+              ? " (Quiver, requested by label)"
+              : " (Quiver, gradients detected)"
+            : "";
         console.log(`[process-logo] Vectorized SVG received via ${result.engine} (${rawSvg.length} chars)`);
         break;
       } catch (err) {

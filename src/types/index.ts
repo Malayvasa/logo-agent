@@ -24,4 +24,7 @@ export interface LogoRequest {
   // Raw SVG markup pasted into a Linear comment. Takes precedence over
   // imageUrl and skips favicon discovery + vectorization entirely.
   svgContent?: string;
+  // The issue carries a "quiver" label: send rasters to Quiver even when the
+  // gradient check calls the logo flat.
+  forceQuiver?: boolean;
 }

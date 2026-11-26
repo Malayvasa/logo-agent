@@ -27,7 +27,8 @@ const MIN_SIZE = 128;
 const UPSCALE_TARGET = 256;
 
 export async function vectorize(
-  faviconImageUrl: string
+  faviconImageUrl: string,
+  opts: { forceQuiver?: boolean } = {}
 ): Promise<VectorizeResult> {
   console.log(`[vectorize] Fetching image: ${faviconImageUrl}`);
 
@@ -78,7 +79,11 @@ export async function vectorize(
   // Gradient logos go to Quiver, which keeps real gradient fills; vectorizer.ai
   // would trace them into flat bands. The check is best-effort: if AI Gateway
   // or Quiver isn't configured or errors, the logo still goes to vectorizer.ai.
-  if (QUIVER_API_KEY && (await hasGradient(originalPng))) {
+  // A "quiver" label on the issue skips the check and asks for Quiver outright.
+  if (opts.forceQuiver && !QUIVER_API_KEY) {
+    console.log(`[vectorize] Quiver requested by label but QUIVER_API_KEY is not set`);
+  }
+  if (QUIVER_API_KEY && (opts.forceQuiver || (await hasGradient(originalPng)))) {
     try {
       return { svgContent: await vectorizeWithQuiver(imageBuffer), engine: "quiver" };
     } catch (err) {
