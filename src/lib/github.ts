@@ -17,19 +17,46 @@ export interface MergeResult {
 // branch name.
 const MAX_BRANCH_ATTEMPTS = 20;
 // GitHub computes mergeability asynchronously; a PR created a second ago can
-// briefly report as not mergeable.
-const MERGE_ATTEMPTS = 4;
-const MERGE_RETRY_MS = 3000;
+// briefly report as not mergeable. In a burst (dozens of tickets filed at
+// once) the squash merges also collide with each other and GitHub answers
+// "Base branch was modified" until the others land; on Nov 27 eight logos
+// were left unmerged after 4 tries 3s apart. Retry longer, with jitter so
+// colliding runs spread out instead of retrying in lockstep.
+const MERGE_ATTEMPTS = 8;
+const MERGE_RETRY_MIN_MS = 2000;
+const MERGE_RETRY_MAX_MS = 6000;
+const mergeRetryDelay = () =>
+  MERGE_RETRY_MIN_MS + Math.floor(Math.random() * (MERGE_RETRY_MAX_MS - MERGE_RETRY_MIN_MS));
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Composio's tools.execute() doesn't throw when GitHub refuses a call; it
+// returns { successful: false, error }. Unchecked, a refused "create branch"
+// or "open PR" looked like success, which is how two runs of the same slug
+// ended up sharing one branch on Nov 27 and one of them deleted the branch
+// under the other's open PR (zotero, google_pay_wallet_mcp, zoho_social,
+// expensify_mcp). Every write below goes through this and throws instead.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function github(slug: string, args: Record<string, unknown>): Promise<{ data: any }> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const result: any = await executeTool(slug, args, githubConnectedAccount());
+  if (result?.successful === false || result?.error) {
+    const raw = result?.error || result?.data?.message || `${slug} failed`;
+    throw new Error(typeof raw === "string" ? raw : JSON.stringify(raw));
+  }
+  return result;
+}
+
+const isAlreadyExists = (err: unknown) =>
+  /already exists/i.test(err instanceof Error ? err.message : String(err));
+
 async function branchExists(branch: string): Promise<boolean> {
   try {
-    const result = await executeTool("GITHUB_GET_A_BRANCH", {
+    const result = await github("GITHUB_GET_A_BRANCH", {
       owner: repoOwner(),
       repo: repoName(),
       branch,
-    }, githubConnectedAccount());
+    });
     return !!result.data?.commit?.sha;
   } catch {
     return false;
@@ -41,16 +68,31 @@ async function branchExists(branch: string): Promise<boolean> {
 // rather than silently reusing the old one. In the normal flow the previous
 // branch is deleted at merge time, so we land back on `logo/<slug>`; the
 // numbered suffixes only come into play when an earlier merge failed and left
-// its branch behind.
-async function resolveBranchName(slug: string): Promise<string> {
+// its branch behind, or another run for the same slug is in flight.
+//
+// The branch is claimed by creating it: GitHub refuses to create a ref that
+// already exists, so two runs racing for `logo/<slug>` can't both get it (a
+// check-then-create could, and did). The loser moves on to the next suffix.
+async function createRunBranch(slug: string, baseSha: string): Promise<string> {
   const base = `logo/${slug}`;
   for (let i = 1; i <= MAX_BRANCH_ATTEMPTS; i++) {
     const candidate = i === 1 ? base : `${base}-${i}`;
-    if (!(await branchExists(candidate))) {
+    try {
+      await github("GITHUB_CREATE_A_REFERENCE", {
+        owner: repoOwner(),
+        repo: repoName(),
+        ref: `refs/heads/${candidate}`,
+        sha: baseSha,
+      });
       if (i > 1) {
-        console.log(`[github] ${base} still exists, using ${candidate} instead`);
+        console.log(`[github] ${base} is taken, using ${candidate} instead`);
       }
       return candidate;
+    } catch (err) {
+      // Taken by an earlier run's leftover branch or a run in flight. Don't
+      // rely on the error's wording alone; check the branch is really there.
+      if (isAlreadyExists(err) || (await branchExists(candidate))) continue;
+      throw err;
     }
   }
   throw new Error(
@@ -66,8 +108,6 @@ export async function commitAndCreatePR(
   const owner = repoOwner();
   const repo = repoName();
   const baseBranch = repoBranch();
-  const githubAccount = githubConnectedAccount();
-  const branchName = await resolveBranchName(slug);
   const filePath = `src/assets/${slug}.svg`;
   const prTitle = `Add ${slug} logo`;
   // Use base-branch URL so the preview keeps working post-merge (the feature
@@ -85,87 +125,88 @@ export async function commitAndCreatePR(
   ].join("\n");
 
   // Step 1: Branch off the base branch
-  const branchResult = await executeTool("GITHUB_GET_A_BRANCH", {
+  const branchResult = await github("GITHUB_GET_A_BRANCH", {
     owner,
     repo,
     branch: baseBranch,
-  }, githubAccount);
+  });
   const baseSha = branchResult.data?.commit?.sha;
   if (!baseSha) {
     throw new Error(`Failed to get base branch SHA`);
   }
 
-  await executeTool("GITHUB_CREATE_A_REFERENCE", {
-    owner,
-    repo,
-    ref: `refs/heads/${branchName}`,
-    sha: baseSha,
-  }, githubAccount);
+  const branchName = await createRunBranch(slug, baseSha);
   console.log(`[github] Created branch: ${branchName}`);
 
-  // Step 2: Get existing file SHA if it exists (needed for updates). The
-  // branch is fresh off base, so this is really "does the base branch already
-  // carry a logo for this slug" — true for every re-run after a first merge.
-  let existingFileSha: string | undefined;
+  // From here on the branch is this run's alone, so on any failure bin it and
+  // the next run gets a clean `logo/<slug>` instead of drifting to `-2`, `-3`…
   try {
-    const fileResult = await executeTool("GITHUB_GET_REPOSITORY_CONTENT", {
+    // Step 2: Get existing file SHA if it exists (needed for updates). The
+    // branch is fresh off base, so this is really "does the base branch
+    // already carry a logo for this slug" — true for every re-run after a
+    // first merge.
+    let existingFileSha: string | undefined;
+    try {
+      const fileResult = await github("GITHUB_GET_REPOSITORY_CONTENT", {
+        owner,
+        repo,
+        path: filePath,
+        ref: branchName,
+      });
+      existingFileSha = fileResult.data?.sha;
+    } catch {
+      // File doesn't exist yet, that's fine
+    }
+
+    // Step 3: Commit the SVG file
+    const contentBase64 = Buffer.from(svgContent).toString("base64");
+
+    await github("GITHUB_CREATE_OR_UPDATE_FILE_CONTENTS", {
       owner,
       repo,
       path: filePath,
-      ref: branchName,
-    }, githubAccount);
-    existingFileSha = fileResult.data?.sha;
-  } catch {
-    // File doesn't exist yet, that's fine
-  }
+      message: existingFileSha ? `fix: update ${slug} logo` : `feat: add ${slug} logo`,
+      content: contentBase64,
+      branch: branchName,
+      ...(existingFileSha ? { sha: existingFileSha } : {}),
+    });
+    console.log(`[github] ${existingFileSha ? "Updated" : "Committed"} ${filePath} to ${branchName}`);
 
-  // Step 3: Commit the SVG file
-  const contentBase64 = Buffer.from(svgContent).toString("base64");
+    // Step 4: Open the PR.
+    let prResult;
+    try {
+      prResult = await github("GITHUB_CREATE_A_PULL_REQUEST", {
+        owner,
+        repo,
+        title: prTitle,
+        body: prBody,
+        head: branchName,
+        base: baseBranch,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // GitHub refuses a PR with no commits between the branches: the SVG we
+      // just wrote is byte-identical to what's already on the base branch.
+      if (/no commits between/i.test(message)) {
+        throw new Error(
+          `The generated SVG for ${slug} is identical to the one already on ${baseBranch}, so there was nothing to open a PR for`
+        );
+      }
+      throw new Error(`Failed to open a PR for ${slug}: ${message}`);
+    }
 
-  await executeTool("GITHUB_CREATE_OR_UPDATE_FILE_CONTENTS", {
-    owner,
-    repo,
-    path: filePath,
-    message: existingFileSha ? `fix: update ${slug} logo` : `feat: add ${slug} logo`,
-    content: contentBase64,
-    branch: branchName,
-    ...(existingFileSha ? { sha: existingFileSha } : {}),
-  }, githubAccount);
-  console.log(`[github] ${existingFileSha ? "Updated" : "Committed"} ${filePath} to ${branchName}`);
+    const prUrl: string | undefined = prResult.data?.html_url || prResult.data?.url;
+    const prNumber: number | undefined = prResult.data?.number;
+    if (!prUrl || typeof prNumber !== "number") {
+      throw new Error(`GitHub didn't return a PR number for ${slug}`);
+    }
 
-  // Step 4: Open the PR. On failure, bin the branch we just made so the next
-  // run gets a clean `logo/<slug>` instead of drifting to `-2`, `-3`, …
-  let prUrl: string | undefined;
-  let prNumber: number | undefined;
-  try {
-    const prResult = await executeTool("GITHUB_CREATE_A_PULL_REQUEST", {
-      owner,
-      repo,
-      title: prTitle,
-      body: prBody,
-      head: branchName,
-      base: baseBranch,
-    }, githubAccount);
-
-    prUrl = prResult.data?.html_url || prResult.data?.url;
-    prNumber = prResult.data?.number;
+    console.log(`[github] PR created: ${prUrl} (#${prNumber})`);
+    return { prUrl, prNumber, branchName };
   } catch (err) {
     await deleteBranch(branchName);
     throw err;
   }
-
-  if (!prUrl || typeof prNumber !== "number") {
-    // The usual cause is an empty diff: the SVG we just wrote is byte-identical
-    // to what's already on the base branch, so the commit was a no-op and
-    // GitHub refuses a PR with no commits between the branches.
-    await deleteBranch(branchName);
-    throw new Error(
-      `Failed to open a PR for ${slug} — the generated SVG may be identical to the one already on ${baseBranch}`
-    );
-  }
-
-  console.log(`[github] PR created: ${prUrl} (#${prNumber})`);
-  return { prUrl, prNumber, branchName };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -237,7 +278,7 @@ export async function mergePR(prNumber: number, branchName: string): Promise<str
     console.log(
       `[github] Merge attempt ${attempt}/${MERGE_ATTEMPTS} for PR #${prNumber} failed: ${lastError.message}`
     );
-    if (attempt < MERGE_ATTEMPTS) await sleep(MERGE_RETRY_MS);
+    if (attempt < MERGE_ATTEMPTS) await sleep(mergeRetryDelay());
   }
 
   throw lastError || new Error(`Failed to merge PR #${prNumber}`);

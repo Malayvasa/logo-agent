@@ -4,9 +4,12 @@ import { processLogo } from "@/lib/process-logo";
 import { handleDone } from "@/lib/handle-done";
 import { isPublicHttpUrl } from "@/lib/auth";
 import { linearProjectName, repoUrlFragment, UNKNOWN_WEBSITE } from "@/lib/config";
+import { existingRunReason, type RunTrigger } from "@/lib/run-claim";
 import type { LinearIssuePayload, LogoRequest } from "@/types";
 
-// Dedup: track slugs currently being processed to avoid duplicate runs from rapid webhook fires
+// Fast path dedup for webhooks that land on the same warm instance. It can't
+// see other instances; the real one-run-per-request guard is lib/run-claim.ts,
+// which works off the Linear issue itself.
 const processing = new Set<string>();
 
 // Background work runs in after() so serverless hosts keep the function alive
@@ -146,8 +149,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ status: "skipped", reason: "no state change" });
     }
     if (action === "update" && !updatedFrom) {
-      // Payload without change info: keep the old behaviour rather than drop runs.
-      console.warn(`[webhook] ${issueData.identifier} update has no updatedFrom; running anyway`);
+      // Payload without change info. Don't drop it here: the run-claim check
+      // below decides from the issue's own history whether it's a new request.
+      console.log(`[webhook] ${issueData.identifier} update has no updatedFrom; checking the issue`);
     }
 
     // Derive a slug from the issue title (or description)
@@ -193,12 +197,13 @@ export async function POST(request: NextRequest) {
       slug,
       websiteUrl,
       forceQuiver: hasQuiverLabel(issueData.labels),
+      trigger: { kind: "issue" },
     };
 
     // Process asynchronously — respond immediately to avoid webhook timeout
     processing.add(slug);
     after(() =>
-      processLogo(logoRequest)
+      runUnlessHandled(logoRequest)
         .catch((err) => {
           console.error(`[webhook] processLogo failed for ${slug}:`, err);
         })
@@ -375,6 +380,7 @@ async function handleCommentEvent(commentData: any): Promise<NextResponse> {
     slug,
     websiteUrl,
     forceQuiver: hasQuiverLabel(issue?.labels),
+    trigger: { kind: "comment", at: commentData.createdAt },
     ...(inlineSvg
       ? { svgContent: inlineSvg }
       : { imageUrl: extracted!.url, imageUrlIsSvg: extracted!.isSvg }),
@@ -382,7 +388,7 @@ async function handleCommentEvent(commentData: any): Promise<NextResponse> {
 
   processing.add(slug);
   after(() =>
-    processLogo(logoRequest)
+    runUnlessHandled(logoRequest)
       .catch((err) => {
         console.error(`[webhook] processLogo (comment) failed for ${slug}:`, err);
       })
@@ -396,6 +402,20 @@ async function handleCommentEvent(commentData: any): Promise<NextResponse> {
     slug,
     source: inlineSvg ? "inline-svg" : extracted!.source,
   });
+}
+
+// Skips webhooks for a request that already has a run (a duplicate delivery,
+// or a follow-up update like the PR attachment, assignee or Wordmark label)
+// without posting anything. A duplicate that slips past this, because both
+// arrived at once, is caught by the claim inside processLogo.
+async function runUnlessHandled(request: LogoRequest): Promise<void> {
+  const trigger: RunTrigger = request.trigger ?? { kind: "manual" };
+  const reason = await existingRunReason(request.issueId, trigger);
+  if (reason) {
+    console.log(`[webhook] ${request.issueIdentifier}: ${reason}, skipping`);
+    return;
+  }
+  await processLogo(request);
 }
 
 // A "quiver" label (any case) forces the Quiver vectorizer for that issue.

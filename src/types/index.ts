@@ -1,3 +1,5 @@
+import type { RunTrigger } from "@/lib/run-claim";
+
 export interface LinearIssuePayload {
   id: string;
   title: string;
@@ -27,4 +29,8 @@ export interface LogoRequest {
   // The issue carries a "quiver" label: send rasters to Quiver even when the
   // gradient check calls the logo flat.
   forceQuiver?: boolean;
+  // What started this run. Decides which earlier runs on the issue count as
+  // "already handled" (see lib/run-claim.ts). Defaults to "manual", which only
+  // steps aside for a run already in flight.
+  trigger?: RunTrigger;
 }
